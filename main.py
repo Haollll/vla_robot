@@ -178,8 +178,35 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--port",
-        default = "/dev/ttyUSB0",
+        default = "/dev/ttyACM0",
         help    = "Serial port for the robot arm.",
+    )
+    p.add_argument(
+        "--realsense",
+        action  = "store_true",
+        help    = (
+            "Capture a live RGB+depth frame from the RealSense camera "
+            "instead of reading from --rgb / --depth files.  "
+            "Requires pyrealsense2 (pip install pyrealsense2)."
+        ),
+    )
+    p.add_argument(
+        "--rs-width",
+        type    = int,
+        default = 640,
+        help    = "RealSense capture width (used with --realsense).",
+    )
+    p.add_argument(
+        "--rs-height",
+        type    = int,
+        default = 480,
+        help    = "RealSense capture height (used with --realsense).",
+    )
+    p.add_argument(
+        "--rs-fps",
+        type    = int,
+        default = 30,
+        help    = "RealSense capture frame rate (used with --realsense).",
     )
     p.add_argument(
         "--dry-run",
@@ -213,12 +240,41 @@ def load_images(rgb_path: str | None, depth_path: str | None):
     return rgb, depth
 
 
+def capture_realsense(width: int, height: int, fps: int):
+    """
+    Capture one aligned RGB + depth frame from the RealSense camera.
+
+    RGB and depth are acquired in two background threads (see
+    RealSenseCamera internals) and joined before this function returns,
+    guaranteeing a matched frame pair.
+    """
+    from vla_framework.camera import RealSenseCamera
+
+    log = logging.getLogger("main")
+    log.info("Opening RealSense camera  %dx%d @ %d fps", width, height, fps)
+    with RealSenseCamera(width=width, height=height, fps=fps) as cam:
+        if cam.is_mock:
+            log.warning(
+                "RealSense running in MOCK mode "
+                "(no camera detected or pyrealsense2 not installed)"
+            )
+        rgb, depth = cam.capture()
+    log.info(
+        "RealSense capture done  rgb=%s  depth=%s  (mock=%s)",
+        rgb.shape, depth.shape, cam.is_mock,
+    )
+    return rgb, depth
+
+
 def main() -> int:
     args = parse_args()
     setup_logging(args.log_level)
     log = logging.getLogger("main")
 
-    rgb, depth = load_images(args.rgb, args.depth)
+    if args.realsense:
+        rgb, depth = capture_realsense(args.rs_width, args.rs_height, args.rs_fps)
+    else:
+        rgb, depth = load_images(args.rgb, args.depth)
     log.info("Images loaded  rgb=%s  depth=%s", rgb.shape, depth.shape)
 
     config   = build_config(args.api_key, args.model, args.port)

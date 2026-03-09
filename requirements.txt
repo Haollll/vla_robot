@@ -5,6 +5,7 @@ scipy>=1.13
 # Vision
 Pillow>=10.0
 opencv-python>=4.9          # optional — for visualisation / camera capture
+pyrealsense2>=2.55          # optional — for RealSense live capture (--realsense flag)
 
 # Gemini planner  (new unified SDK — replaces deprecated google-generativeai)
 google-genai>=1.0           # pip install google-genai
