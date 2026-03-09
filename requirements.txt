@@ -1,0 +1,16 @@
+# Core scientific stack
+numpy>=1.26
+scipy>=1.13
+
+# Vision
+Pillow>=10.0
+opencv-python>=4.9          # optional — for visualisation / camera capture
+
+# Gemini planner  (new unified SDK — replaces deprecated google-generativeai)
+google-genai>=1.0           # pip install google-genai
+
+# Robot hardware (Hugging Face LeRobot)
+# Install from source for latest SO-100 support:
+#   pip install git+https://github.com/huggingface/lerobot.git
+# Or from PyPI:
+lerobot>=0.1                # may be "huggingface-lerobot" depending on release
