@@ -86,7 +86,7 @@ flowchart TD
 
 - Python 3.10+
 - Intel RealSense D435 (or any RGB-D camera)
-- SO-100 6-DOF robot arm (via [LeRobot](https://github.com/huggingface/lerobot))
+- SO-101 6-DOF robot arm (via [LeRobot](https://github.com/huggingface/lerobot))
 - Google Gemini API key
 
 ---
