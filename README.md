@@ -26,6 +26,59 @@ RGB + Depth + Command
  Stage 4 ─ EXECUTE     CartesianPIDController + LeRobotInterface
                         closed-loop servo, gripper stepped at transitions
 ```
+---
+## Data Flow
+```mermaid
+flowchart TD
+  subgraph DF["DATA FLOW"]
+      direction TB
+
+      A(["Raw Stereo Frame
+        1280×480 RGB"])
+      B[("Rolling Buffer
+        deque · 15 frames")]
+      C["Snapshot Coordinator
+        freeze same index"]
+      
+      D1(["rgb_snapshot"])
+      D2(["depth_stack"])
+
+      E1[["VLM Inference
+        Gemini Robotics"]]
+      E2[["Stereo Processing
+        Rectify→Disparity→Depth"]]
+
+      F1(["6x (u,v) waypoints"])
+      F2(["Stable Depth Map
+        spatial+temporal median"])
+
+      G["Waypoint Lifting
+        (u,v)+depth → (X,Y,Z)"]
+
+      H(["6x (X,Y,Z)
+        robot base frame"])
+
+      I{"Valid?
+        plausibility check"}
+
+      J["Motion Planner
+        waypoints 1→5"]
+      K["Grasp Checkpoint
+        re-lift waypoint 6"]
+
+      END(("✓ Grasp"))
+      RETRY(("↺ Retry"))
+
+      A --> B --> C
+      C --> D1 --> E1 --> F1
+      C --> D2 --> E2 --> F2
+      F1 --> G
+      F2 --> G
+      G --> H --> I
+      I -->|"pass"| J --> K --> END
+      I -->|"fail"| RETRY
+  end
+```
 
 ---
 
