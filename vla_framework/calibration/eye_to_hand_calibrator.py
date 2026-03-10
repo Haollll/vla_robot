@@ -45,19 +45,21 @@ MIN_SAMPLES = 4
 # ---------------------------------------------------------------------------
 
 def _build_charuco_board(squares_x: int, squares_y: int,
-                          square_len: float, marker_len: float):
+                          square_len: float, marker_len: float,
+                          dict_name: str = "DICT_5X5_100"):
     """Return (board, aruco_dict) using whichever OpenCV ArUco API is available."""
     import cv2
+    dict_id = getattr(cv2.aruco, dict_name)
     try:
         # OpenCV >= 4.7  (new API)
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
         board = cv2.aruco.CharucoBoard(
             (squares_x, squares_y), square_len, marker_len, aruco_dict
         )
         return board, aruco_dict, "new"
     except AttributeError:
         # OpenCV < 4.7  (legacy API)
-        aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+        aruco_dict = cv2.aruco.Dictionary_get(dict_id)
         board = cv2.aruco.CharucoBoard_create(
             squares_x, squares_y, square_len, marker_len, aruco_dict
         )
@@ -131,18 +133,19 @@ class EyeToHandCalibrator:
         dist_coeffs:   np.ndarray,
         squares_x:   int   = 7,
         squares_y:   int   = 5,
-        square_len:  float = 0.04,
-        marker_len:  float = 0.03,
+        square_len:  float = 0.03,
+        marker_len:  float = 0.022,
+        dict_name:   str   = "DICT_5X5_100",
     ) -> None:
         self._K    = camera_matrix.astype(np.float64)
         self._dist = dist_coeffs.astype(np.float64)
 
         self._board, self._dict, self._api = _build_charuco_board(
-            squares_x, squares_y, square_len, marker_len
+            squares_x, squares_y, square_len, marker_len, dict_name
         )
         log.info(
-            "ChArUco board %dx%d  sq=%.3fm  mk=%.3fm  OpenCV API=%s",
-            squares_x, squares_y, square_len, marker_len, self._api,
+            "ChArUco board %dx%d  sq=%.3fm  mk=%.3fm  dict=%s  OpenCV API=%s",
+            squares_x, squares_y, square_len, marker_len, dict_name, self._api,
         )
 
         # Accumulated samples

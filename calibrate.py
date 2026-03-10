@@ -64,7 +64,7 @@ def _print_instructions() -> None:
 ╔══════════════════════════════════════════════════════════════════╗
 ║          Eye-to-Hand Calibration  —  SO-101 + RealSense          ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  Board : 7×5 ChArUco  square=0.04 m  marker=0.03 m  DICT_4X4   ║
+║  Board : 7×5 ChArUco  square=0.03 m  marker=0.022 m  DICT_5X5  ║
 ║  Mount the board FLAT on the robot gripper / end-effector.      ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Controls                                                        ║
@@ -134,7 +134,9 @@ def run_calibration(args: argparse.Namespace) -> int:
     dist = np.zeros((4, 1), dtype=np.float64)   # assume no distortion
 
     # ── Calibrator ────────────────────────────────────────────────────────
-    cal = EyeToHandCalibrator(K, dist)
+    cal = EyeToHandCalibrator(K, dist,
+                              square_len=0.03, marker_len=0.022,
+                              dict_name="DICT_5X5_100")
 
     _print_instructions()
     print("Press SPACE to capture your first sample …\n")
