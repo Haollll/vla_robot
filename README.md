@@ -96,7 +96,16 @@ flowchart TD
 ```bash
 git clone https://github.com/Haollll/vla_robot.git
 cd vla_robot
+```
+```bash
+conda create -n vla_robot python=3.10
+conda activate vla_robot
 pip install -r requirements.txt
+```
+Install stereo-vision-toolkit:
+```bash
+pip install git@github.com:Kevinma0215/stereo-depth-toolkit.git
+# If toolkit upgrade: pip install --upgrade git@github.com:Kevinma0215/stereo-depth-toolkit.git
 ```
 
 For the latest LeRobot SO-100 support, install from source:
