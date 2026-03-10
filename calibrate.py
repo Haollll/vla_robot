@@ -64,23 +64,64 @@ def _print_instructions() -> None:
 ╔══════════════════════════════════════════════════════════════════╗
 ║          Eye-to-Hand Calibration  —  SO-101 + RealSense          ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  Board : 7×5 ChArUco  square=0.03 m  marker=0.022 m  DICT_5X5  ║
-║  Mount the board FLAT on the robot gripper / end-effector.      ║
+║  Marker : ArUco  DICT_4X4_50  ID=0  physical size=0.04 m        ║
+║  Mount the marker FLAT on the robot gripper / end-effector.     ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Controls                                                        ║
 ║    SPACE  — capture sample at current pose                       ║
 ║    D      — discard last sample                                  ║
-║    P      — show board preview                                   ║
+║    P      — show marker preview                                  ║
 ║    Q      — finish collecting and compute calibration            ║
 ║    ESC    — abort                                                ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Tips                                                            ║
 ║    • Move the arm to 15-20 DIFFERENT poses before pressing Q.   ║
 ║    • Vary both position AND orientation each capture.            ║
-║    • Keep the board fully visible and well-lit.                  ║
+║    • Keep the marker fully visible and well-lit.                 ║
 ║    • Avoid poses where the arm blocks the camera view.           ║
 ╚══════════════════════════════════════════════════════════════════╝
 """)
+
+
+# ---------------------------------------------------------------------------
+# Pose hint table  (3 heights × 3 horizontal positions × 2 depths = 18)
+# ---------------------------------------------------------------------------
+
+_POSE_HINTS: list[str] = [
+    # ── Near (close to camera) ─────────────────────────────────────────────
+    "TOP-LEFT,     NEAR   — arm high, shifted left,   board flat",
+    "TOP-CENTER,   NEAR   — arm high, centered,        board flat",
+    "TOP-RIGHT,    NEAR   — arm high, shifted right,   board flat",
+    "MID-LEFT,     NEAR   — arm mid,  shifted left,    tilt wrist 20° forward",
+    "MID-CENTER,   NEAR   — arm mid,  centered,         tilt wrist 20° forward",
+    "MID-RIGHT,    NEAR   — arm mid,  shifted right,   tilt wrist 20° forward",
+    "LOW-LEFT,     NEAR   — arm low,  shifted left,    tilt wrist 40° forward",
+    "LOW-CENTER,   NEAR   — arm low,  centered,         tilt wrist 40° forward",
+    "LOW-RIGHT,    NEAR   — arm low,  shifted right,   tilt wrist 40° forward",
+    # ── Far (away from camera) ─────────────────────────────────────────────
+    "TOP-LEFT,     FAR    — arm high, shifted left,   rotate wrist 30° CW",
+    "TOP-CENTER,   FAR    — arm high, centered,        rotate wrist 30° CW",
+    "TOP-RIGHT,    FAR    — arm high, shifted right,   rotate wrist 30° CCW",
+    "MID-LEFT,     FAR    — arm mid,  shifted left,    tilt wrist 30° left",
+    "MID-CENTER,   FAR    — arm mid,  centered,         tilt wrist 30° right",
+    "MID-RIGHT,    FAR    — arm mid,  shifted right,   tilt wrist 30° left",
+    "LOW-LEFT,     FAR    — arm low,  shifted left,    tilt + rotate wrist",
+    "LOW-CENTER,   FAR    — arm low,  centered,         tilt + rotate wrist",
+    "LOW-RIGHT,    FAR    — arm low,  shifted right,   tilt + rotate wrist",
+]
+
+_TOTAL_POSES = len(_POSE_HINTS)   # 18
+
+
+def _print_next_pose_hint(n_captured: int) -> None:
+    """Print the suggested pose for the NEXT capture (0-indexed by n_captured)."""
+    idx = n_captured  # next sample index
+    if idx < _TOTAL_POSES:
+        hint = _POSE_HINTS[idx]
+        print(f"\n  ▶  Pose {idx + 1}/{_TOTAL_POSES}: {hint}")
+    else:
+        extra = idx - _TOTAL_POSES + 1
+        print(f"\n  ▶  Bonus pose #{extra}: choose any new position / orientation")
 
 
 def _print_matrix(T: np.ndarray) -> None:
@@ -135,11 +176,12 @@ def run_calibration(args: argparse.Namespace) -> int:
 
     # ── Calibrator ────────────────────────────────────────────────────────
     cal = EyeToHandCalibrator(K, dist,
-                              square_len=0.03, marker_len=0.022,
-                              dict_name="DICT_5X5_100")
+                              marker_id=0, marker_size=0.04,
+                              dict_name="DICT_4X4_50")
 
     _print_instructions()
-    print("Press SPACE to capture your first sample …\n")
+    _print_next_pose_hint(0)
+    print("\nMove the arm to the suggested pose, then press SPACE to capture.\n")
 
     cv2.namedWindow("Calibration", cv2.WINDOW_NORMAL)
 
@@ -176,8 +218,9 @@ def run_calibration(args: argparse.Namespace) -> int:
                 ok, _ = cal.add_sample(frame, q_rad)
                 if ok:
                     print(f"  ✓ Sample {cal.n_samples} captured")
+                    _print_next_pose_hint(cal.n_samples)
                 else:
-                    print("  ✗ Board not detected — move arm or improve lighting")
+                    print("  ✗ Marker not detected — move arm or improve lighting")
 
             elif key == ord('d') or key == ord('D'):
                 if cal.n_samples > 0:
@@ -185,12 +228,13 @@ def run_calibration(args: argparse.Namespace) -> int:
                     cal._tvecs.pop()
                     cal._T_ee2base.pop()
                     print(f"  Discarded last sample  ({cal.n_samples} remaining)")
+                    _print_next_pose_hint(cal.n_samples)
 
             elif key == ord('p') or key == ord('P'):
-                preview = cal.draw_board_preview(scale=0.5)
-                cv2.imshow("Board preview  (press any key to close)", preview)
+                preview = cal.draw_marker_preview(size_px=300)
+                cv2.imshow("Marker preview  (press any key to close)", preview)
                 cv2.waitKey(0)
-                cv2.destroyWindow("Board preview  (press any key to close)")
+                cv2.destroyWindow("Marker preview  (press any key to close)")
 
             elif key == ord('q') or key == ord('Q'):
                 if cal.n_samples < 10:
@@ -234,32 +278,31 @@ def _preview_detection(
     q_rad: np.ndarray,
 ) -> tuple:
     """
-    Run board detection for live preview WITHOUT storing the sample.
+    Run marker detection for live preview WITHOUT storing the sample.
     Returns (success, annotated_frame).
     """
     import cv2
+    from vla_framework.calibration.eye_to_hand_calibrator import _detect_aruco_marker
+
     gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     overlay = frame.copy()
-    corners, ids, rvec, tvec = _detect_charuco_preview(gray, cal)
+    corners, mid, rvec, tvec = _detect_aruco_marker(
+        gray, cal._dict, cal._marker_id, cal._marker_sz, cal._K, cal._dist
+    )
 
-    if corners is not None and ids is not None:
-        cv2.aruco.drawDetectedCornersCharuco(overlay, corners, ids)
+    if corners is not None:
+        cv2.aruco.drawDetectedMarkers(overlay, [corners], np.array([[mid]]))
 
     if rvec is not None:
-        cv2.drawFrameAxes(overlay, cal._K, cal._dist, rvec, tvec, 0.03)
-        cv2.putText(overlay, "Board OK", (10, 30),
+        cv2.drawFrameAxes(overlay, cal._K, cal._dist, rvec, tvec,
+                          cal._marker_sz * 0.5)
+        cv2.putText(overlay, "Marker OK", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         return True, overlay
 
-    cv2.putText(overlay, "Board NOT detected", (10, 30),
+    cv2.putText(overlay, "Marker NOT detected", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     return False, overlay
-
-
-def _detect_charuco_preview(gray, cal):
-    """Run detection using the calibrator's board/dict/api without storing."""
-    from vla_framework.calibration.eye_to_hand_calibrator import _detect_charuco
-    return _detect_charuco(gray, cal._board, cal._dict, cal._api, cal._K, cal._dist)
 
 
 # ---------------------------------------------------------------------------
