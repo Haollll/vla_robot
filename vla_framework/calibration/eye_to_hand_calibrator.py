@@ -14,7 +14,7 @@ Setup
 
 Board specification
 -------------------
-  Default: 7×5 ChArUco, square 0.04 m, marker 0.03 m, DICT_4X4_50.
+  Default: 7×5 ChArUco, square 0.03 m, marker 0.022 m, DICT_5X5_100.
   Print at exactly the declared physical size and mount flat on a rigid
   surface attached to the end-effector.
 
