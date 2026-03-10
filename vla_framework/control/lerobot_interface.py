@@ -154,11 +154,27 @@ def so101_fk(joint_angles_rad: np.ndarray) -> np.ndarray:
     -------
     xyz : shape (3,) — end-effector position in robot base frame [m].
     """
+    return so101_fk_matrix(joint_angles_rad)[:3, 3]
+
+
+def so101_fk_matrix(joint_angles_rad: np.ndarray) -> np.ndarray:
+    """
+    Full forward kinematics for the SO-101 follower arm.
+
+    Parameters
+    ----------
+    joint_angles_rad : shape (≥5,) — [shoulder_pan, shoulder_lift,
+                       elbow_flex, wrist_flex, wrist_roll] in radians.
+                       Index 5 (gripper) is ignored.
+
+    Returns
+    -------
+    T : shape (4, 4) — homogeneous transform T_EE_to_base.
+    """
     T = np.eye(4, dtype=np.float64)
     for i, T_origin in enumerate(_TF_ORIGINS):
         T = T @ T_origin @ _rotz(float(joint_angles_rad[i]))
-    T = T @ _TF_EE
-    return T[:3, 3]
+    return T @ _TF_EE
 
 
 def _numerical_jacobian(q_rad: np.ndarray, eps: float = 1e-4) -> np.ndarray:

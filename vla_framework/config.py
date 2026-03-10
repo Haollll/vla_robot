@@ -5,10 +5,52 @@ Swap values per robot/camera setup; no code changes required.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 import numpy as np
+
+# Default calibration file written by calibrate.py
+_CALIB_FILE = Path(__file__).parent.parent / "calibration" / "camera_to_robot.npy"
+
+# Fallback T (camera ~55 cm above workspace, pointing down)
+_DEFAULT_T = np.array(
+    [
+        [ 0.0, -1.0,  0.0,  0.25],
+        [-1.0,  0.0,  0.0,  0.30],
+        [ 0.0,  0.0, -1.0,  0.55],
+        [ 0.0,  0.0,  0.0,  1.00],
+    ],
+    dtype=np.float64,
+)
+
+
+def _load_extrinsics() -> np.ndarray:
+    """
+    Try to load T_camera→robot from the calibration file produced by
+    calibrate.py.  Falls back to the hard-coded default and emits a
+    warning if the file is absent.
+    """
+    if _CALIB_FILE.exists():
+        T = np.load(_CALIB_FILE)
+        # Lightweight sanity check
+        if T.shape == (4, 4):
+            return T.astype(np.float64)
+        warnings.warn(
+            f"Calibration file {_CALIB_FILE} has unexpected shape {T.shape}; "
+            "using hard-coded default extrinsics.",
+            stacklevel=3,
+        )
+    else:
+        warnings.warn(
+            f"Camera extrinsics not calibrated — {_CALIB_FILE} not found.  "
+            "Run  python calibrate.py  to perform hand-eye calibration.  "
+            "Using hard-coded placeholder transform until then.",
+            stacklevel=3,
+        )
+    return _DEFAULT_T.copy()
 
 
 # ---------------------------------------------------------------------------
@@ -65,17 +107,7 @@ class CameraExtrinsics:
     offset 25 cm in x and 30 cm in y from robot origin.
     Override with your actual hand-eye calibration result.
     """
-    T: np.ndarray = field(
-        default_factory=lambda: np.array(
-            [
-                [ 0.0, -1.0,  0.0,  0.25],
-                [-1.0,  0.0,  0.0,  0.30],
-                [ 0.0,  0.0, -1.0,  0.55],
-                [ 0.0,  0.0,  0.0,  1.00],
-            ],
-            dtype=np.float64,
-        )
-    )
+    T: np.ndarray = field(default_factory=_load_extrinsics)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +160,7 @@ class VLAConfig:
     waypoint_tolerance:  float = 0.005    # Convergence radius [m]
 
     # Robot
-    robot_type:         str   = "so100"          # LeRobot robot identifier
+    robot_type:         str   = "so101"          # LeRobot robot identifier
     robot_port:         str   = "/dev/ttyUSB0"
     control_frequency:  float = 50.0             # Hz
     gripper_settle_s:   float = 0.40             # Wait after gripper command [s]
