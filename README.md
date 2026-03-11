@@ -113,7 +113,7 @@ pip install git+https://github.com/huggingface/lerobot.git
 
 ```bash
 python main.py \
-  --command "pick up the red cube" \
+  --command "pick up the red cube and place it on the yellow paper" \
   --api-key $GEMINI_KEY \
   --dry-run
 ```
