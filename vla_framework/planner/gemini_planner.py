@@ -11,7 +11,7 @@ Install:  pip install google-genai
 
 Model note
 ----------
-Targets "gemini-robotics-er" when GA.  Use "gemini-2.0-flash" or
+Targets "gemini-robotics-er" when GA.  Use "gemini-2.5-flash" or
 "gemini-1.5-flash" for dev/testing.  Swap config.gemini_model; no other
 code changes needed.
 """
@@ -99,7 +99,7 @@ class GeminiPlanner:
     Parameters
     ----------
     api_key    : Google AI Studio API key.
-    model_name : Gemini model ID.  Default = "gemini-2.0-flash".
+    model_name : Gemini model ID.  Default = "gemini-2.5-flash".
     max_retries: How many times to retry on 429 / transient errors.
     retry_delay: Initial back-off seconds (doubles each retry).
     """
@@ -107,7 +107,7 @@ class GeminiPlanner:
     def __init__(
         self,
         api_key:     str,
-        model_name:  str = "gemini-2.0-flash",
+        model_name:  str = "gemini-2.5-flash",
         max_retries: int = 4,
         retry_delay: float = 5.0,
     ) -> None:
@@ -241,7 +241,7 @@ class GeminiPlanner:
     @staticmethod
     def _extract_json(text: str) -> str:
         m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-        if m:
+        if m and m.group(1).strip():
             return m.group(1).strip()
         start = text.find("[")
         end   = text.rfind("]")

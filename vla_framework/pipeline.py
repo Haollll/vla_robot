@@ -41,9 +41,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from stereo_depth import CameraStreamer
 
 from .config import VLAConfig
 from .planner.gemini_planner      import GeminiPlanner, SemanticWaypoint
@@ -71,8 +74,9 @@ class VLAPipeline:
     >>> pipeline.disconnect()
     """
 
-    def __init__(self, config: VLAConfig) -> None:
+    def __init__(self, config: VLAConfig, streamer: CameraStreamer | None = None) -> None:
         self.cfg = config
+        self.streamer = streamer
 
         self.planner = GeminiPlanner(
             api_key    = config.gemini_api_key,
@@ -239,26 +243,32 @@ class VLAPipeline:
     # Full pipeline
     # ------------------------------------------------------------------
 
-    def run(
+    def run(self, command: str) -> bool:
+        """
+        Execute the complete VLA pipeline using live camera input.
+        Calls self.streamer.snapshot() to get rgb + depth, then runs
+        all four stages.
+
+        Raises NotReadyError if streamer buffer is not full yet.
+        Raises RuntimeError if no streamer was provided.
+        """
+        if self.streamer is None:
+            raise RuntimeError("No CameraStreamer provided — cannot run live pipeline.")
+        result = self.streamer.snapshot()   # raises NotReadyError if not ready
+        rgb_image   = result.rgb_snapshot
+        depth_image = result.stable_depth
+
+        return self.run_from_images(rgb_image, depth_image, command)
+
+    def run_from_images(
         self,
         rgb_image:   np.ndarray,
         depth_image: np.ndarray,
         command:     str,
     ) -> bool:
         """
-        Execute the complete VLA pipeline.
-
-        Parameters
-        ----------
-        rgb_image   : uint8  (H, W, 3) — RGB frame from camera.
-        depth_image : float32 (H, W)   — depth in metres
-                      OR uint16 (H, W) — depth in millimetres (auto-detected).
-        command     : Natural language task description.
-
-        Returns
-        -------
-        True  — task completed successfully.
-        False — one or more stages failed.
+        Execute pipeline from static images (for dry-run / testing).
+        Does not require a CameraStreamer.
         """
         sep = "═" * 60
         log.info(sep)
