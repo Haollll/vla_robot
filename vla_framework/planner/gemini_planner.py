@@ -174,26 +174,35 @@ class GeminiPlanner:
     def _call_with_retry(self, pil_img: Image.Image, prompt: str) -> str:
         types = self._genai_types
         delay = self._retry_delay
-
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._client.models.generate_content(
-                    model    = self._model_name,
-                    contents = [pil_img, prompt],
-                    config   = types.GenerateContentConfig(
-                        temperature      = 0.2,
-                        max_output_tokens= 2048,
+                    model=self._model_name,
+                    contents=[pil_img, prompt],
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=2048,
                     ),
                 )
-                response_text = response.candidates[0].content.parts[0].text
+                # Preferred path: official SDK convenience accessor
+                response_text = getattr(response, "text", None)
+                # Fallback: scan all candidate parts for text
+                if not response_text:
+                    candidates = getattr(response, "candidates", None) or []
+                    for cand in candidates:
+                        content = getattr(cand, "content", None)
+                        parts = getattr(content, "parts", None) or []
+                        for part in parts:
+                            part_text = getattr(part, "text", None)
+                            if part_text and part_text.strip():
+                                response_text = part_text
+                                break
+                        if response_text:
+                            break
                 if not response_text or not response_text.strip():
-                    log.error(
-                        "Gemini returned empty response  raw=%r  candidates=%s",
-                        response_text, response.candidates,
-                    )
-                    raise ValueError("Gemini returned empty response text")
-                return response_text
-
+                    log.error("Gemini returned no usable text. Full response: %r", response)
+                    raise ValueError("Gemini returned no usable text response")
+                return response_text.strip()
             except Exception as exc:
                 err_str = str(exc)
                 is_rate_limit = (
@@ -206,34 +215,28 @@ class GeminiPlanner:
                     or "503" in err_str
                     or "UNAVAILABLE" in err_str
                 )
-
                 if (is_rate_limit or is_transient) and attempt < self._max_retries:
-                    # Parse suggested retry-after if present
                     suggested = self._parse_retry_after(err_str)
                     wait = max(delay, suggested)
                     log.warning(
                         "Gemini %s (attempt %d/%d) — retrying in %.0f s  [%s]",
                         "rate-limit" if is_rate_limit else "transient error",
-                        attempt + 1, self._max_retries,
-                        wait,
-                        exc.__class__.__name__,
+                        attempt + 1, self._max_retries, wait, exc.__class__.__name__,
                     )
                     time.sleep(wait)
-                    delay *= 2   # exponential back-off
+                    delay *= 2
                 else:
-                    # Non-retryable or exhausted retries
                     if is_rate_limit:
                         raise RuntimeError(
                             f"Gemini quota exhausted after {attempt + 1} attempt(s).\n"
                             "Options:\n"
-                            "  1. Enable billing in Google AI Studio: https://aistudio.google.com\n"
-                            "  2. Wait for quota reset (typically 1 min or 24 h)\n"
-                            "  3. Use --model gemini-1.5-flash (separate quota bucket)\n"
+                            "  1. Enable billing in Google AI Studio\n"
+                            "  2. Wait for quota reset\n"
+                            "  3. Use --model gemini-1.5-flash\n"
                             f"Original error: {exc}"
                         ) from exc
                     raise
-
-        raise RuntimeError("Unreachable")   # pragma: no cover
+        raise RuntimeError("Unreachable")
 
     @staticmethod
     def _parse_retry_after(err_str: str) -> float:
