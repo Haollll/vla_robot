@@ -104,6 +104,7 @@ class BuildStage:
         self._builder = TrajectoryBuilder(
             offsets             = config.action_offsets,
             interpolation_steps = config.interpolation_steps,
+            control_freq        = config.control_frequency,
         )
 
     def run(
