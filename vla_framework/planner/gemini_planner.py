@@ -185,7 +185,14 @@ class GeminiPlanner:
                         max_output_tokens= 2048,
                     ),
                 )
-                return response.text
+                response_text = response.candidates[0].content.parts[0].text
+                if not response_text or not response_text.strip():
+                    log.error(
+                        "Gemini returned empty response  raw=%r  candidates=%s",
+                        response_text, response.candidates,
+                    )
+                    raise ValueError("Gemini returned empty response text")
+                return response_text
 
             except Exception as exc:
                 err_str = str(exc)
