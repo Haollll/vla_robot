@@ -256,6 +256,7 @@ class GeminiPlanner:
         image_h: int,
     ) -> List[SemanticWaypoint]:
         raw_json = self._extract_json(response_text)
+        raw_json = re.sub(r"```json\s*|\s*```", "", raw_json).strip()
         try:
             items = json.loads(raw_json)
         except json.JSONDecodeError as exc:
