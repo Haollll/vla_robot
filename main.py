@@ -22,7 +22,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from stereo_depth import CameraStreamer
 
 import numpy as np
 
@@ -160,7 +165,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--model",
-        default = "gemini-2.0-flash",
+        default = "gemini-2.5-flash",
         help    = 'Gemini model ID.  Use "gemini-robotics-er" when available.',
     )
     p.add_argument(
@@ -214,6 +219,29 @@ def parse_args() -> argparse.Namespace:
         help    = "Plan + project + build trajectory, but skip robot execution.",
     )
     p.add_argument(
+        "--calib",
+        default = "/home/kevin/projects/stereo-depth-toolkit/outputs/calib/calib.yaml",
+        help    = "Path to stereo calibration file (calib.yaml).",
+    )
+    p.add_argument(
+        "--uvc-width",
+        type    = int,
+        default = 2560,
+        help    = "UVC stereo camera capture width (side-by-side frame).",
+    )
+    p.add_argument(
+        "--uvc-height",
+        type    = int,
+        default = 720,
+        help    = "UVC stereo camera capture height.",
+    )
+    p.add_argument(
+        "--uvc-fps",
+        type    = int,
+        default = 30,
+        help    = "UVC stereo camera frame rate.",
+    )
+    p.add_argument(
         "--log-level",
         default = "INFO",
         choices = ["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -238,6 +266,23 @@ def load_images(rgb_path: str | None, depth_path: str | None):
         if depth.max() > 10.0:   # assume mm
             depth /= 1000.0
     return rgb, depth
+
+
+def build_streamer(
+    calib_path:   str,
+    device_index: int = 0,
+    width:        int = 2560,
+    height:       int = 720,
+    fps:          int = 30,
+) -> "CameraStreamer":
+    """Construct a fully wired CameraStreamer from a calibration file."""
+    from stereo_depth import CameraStreamer, RollingBuffer, StereoPipeline
+    from stereo_depth.adapters.camera.uvc_source import UvcSource
+
+    processor = StereoPipeline.from_yaml(calib_path)
+    source    = UvcSource(device_index=device_index, width=width, height=height, fps=fps)
+    buffer    = RollingBuffer(maxlen=15)
+    return CameraStreamer(source, buffer, processor)
 
 
 def capture_realsense(width: int, height: int, fps: int):
@@ -277,10 +322,10 @@ def main() -> int:
         rgb, depth = load_images(args.rgb, args.depth)
     log.info("Images loaded  rgb=%s  depth=%s", rgb.shape, depth.shape)
 
-    config   = build_config(args.api_key, args.model, args.port)
-    pipeline = VLAPipeline(config)
+    config = build_config(args.api_key, args.model, args.port)
 
     if args.dry_run:
+        pipeline = VLAPipeline(config)
         log.info("DRY RUN — planning only, robot will not move")
         waypoints  = pipeline.plan(rgb, args.command)
         positions  = pipeline.project_waypoints(waypoints, depth)
@@ -293,8 +338,18 @@ def main() -> int:
                      tp.position.round(4), tp.gripper)
         return 0
 
-    with pipeline:
-        success = pipeline.run(rgb, depth, args.command)
+    streamer = build_streamer(args.calib, width=args.uvc_width, height=args.uvc_height, fps=args.uvc_fps)
+    pipeline = VLAPipeline(config, streamer=streamer)
+
+    with pipeline.streamer:
+        # wait for buffer to fill (~0.5s at 30fps)
+        log.info("Waiting for camera buffer to fill...")
+        while not pipeline.streamer.is_ready:
+            time.sleep(0.05)
+        log.info("Camera ready — starting pipeline")
+
+        with pipeline:
+            success = pipeline.run(args.command)
 
     return 0 if success else 1
 

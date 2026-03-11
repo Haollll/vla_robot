@@ -101,6 +101,7 @@ cd vla_robot
 conda create -n vla_robot python=3.10
 conda activate vla_robot
 pip install -r requirements.txt
+pip install google-genai
 ```
 Install stereo-vision-toolkit:
 ```bash

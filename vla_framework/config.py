@@ -120,8 +120,8 @@ class VLAConfig:
 
     # Gemini planner
     gemini_api_key:  str = ""
-    # "gemini-robotics-er" when GA; use "gemini-2.0-flash" for dev/testing
-    gemini_model:    str = "gemini-2.0-flash"
+    # "gemini-robotics-er" when GA; use "gemini-2.5-flash" for dev/testing
+    gemini_model:    str = "gemini-2.5-flash"
 
     # Trajectory
     interpolation_steps: int   = 50       # Points per waypoint segment
