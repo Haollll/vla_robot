@@ -11,20 +11,22 @@ Takes a natural-language command and an RGB-D camera frame, then plans, projects
 RGB + Depth + Command
         │
         ▼
- Stage 1 ─ PLAN        GeminiPlanner
-                        (RGB + text) → semantic 2-D waypoints
+ Stage 1 ─ PlanStage       GeminiPlanner
+                            (RGB + text) → semantic 2-D waypoints
         │
         ▼
- Stage 2 ─ PROJECT     DepthProjector
-                        (u, v) + depth → 3-D robot-frame Point3D
+ Stage 2 ─ ProjectStage    DepthProjector
+                            (u, v) + depth → 3-D robot-frame Point3D
+                            ↓ plausibility check (z≥0, dist≤1.5m)
+                              retry planning once on failure
         │
         ▼
- Stage 3 ─ BUILD       TrajectoryBuilder
-                        geometric offsets + cubic spline → dense trajectory
+ Stage 3 ─ BuildStage      TrajectoryBuilder
+                            geometric offsets + cubic spline → dense trajectory
         │
         ▼
- Stage 4 ─ EXECUTE     CartesianPIDController + LeRobotInterface
-                        closed-loop servo, gripper stepped at transitions
+ Stage 4 ─ ExecuteStage    CartesianPIDController + LeRobotInterface
+                            closed-loop servo, gripper stepped at transitions
 ```
 
 ---
@@ -61,16 +63,16 @@ flowchart TD
       H(["(X,Y,Z)
         robot base frame"])
 
-      I{"Valid?
-        plausibility check"}
+      I{"Plausibility?
+        z≥0, dist≤1.5m"}
 
-      J["Motion Planner
-        trajectory build"]
+      J["Build Trajectory
+        offsets + spline"]
       K["Execute
         PID servo + gripper"]
 
       END(("✓ Done"))
-      RETRY(("↺ Retry"))
+      RETRY(("↺ Retry plan"))
 
       A --> B --> C
       C --> D1 --> E1 --> F1
@@ -107,7 +109,7 @@ conda activate vla_robot
 pip install -r requirements.txt
 ```
 
-`requirements.txt` installs everything including the stereo-depth toolkit and LeRobot from source:
+`requirements.txt` installs everything:
 
 ```
 numpy>=1.26
@@ -177,7 +179,7 @@ python main.py \
 | `--rgb` | None | Path to RGB image (PNG/JPEG) |
 | `--depth` | None | Path to depth map (.npy metres or .png uint16 mm) |
 | `--port` | `/dev/ttyACM0` | Robot serial port |
-| `--calib` | *(path to calib.yaml)* | Stereo calibration YAML for live camera |
+| `--calib` | None | Stereo calibration YAML (required for live camera) |
 | `--uvc-width` | `2560` | UVC camera capture width |
 | `--uvc-height` | `720` | UVC camera capture height |
 | `--uvc-fps` | `30` | UVC camera frame rate |
@@ -189,16 +191,22 @@ python main.py \
 
 ## Configuration
 
-All hardware parameters are in [vla_framework/config.py](vla_framework/config.py) — camera intrinsics/extrinsics, PID gains, action offsets, and robot settings.
-No code changes are needed when switching hardware; edit the dataclasses or pass a custom `VLAConfig` to `VLAPipeline`.
+All hardware parameters are in [vla_framework/config.py](vla_framework/config.py).
+Hardware defaults (intrinsics, PID, offsets) are assembled by
+[vla_framework/config_factory.py](vla_framework/config_factory.py).
 
-### Camera intrinsics (Intel RealSense D435 defaults)
+### Camera intrinsics
 
 ```python
 CameraIntrinsics(fx=615.3, fy=615.3, cx=320.0, cy=240.0, width=640, height=480)
 ```
 
-Replace with values from your stereo calibration (`camera_matrix` from calib.yaml).
+Replace with values from your stereo calibration.
+
+### Camera extrinsics (T_cam→robot)
+
+Auto-loaded from `calibration/camera_to_robot.npy` if it exists (written by `calibrate.py`).
+Falls back to a placeholder and prints a warning if the file is missing.
 
 ### Action offsets (metres)
 
@@ -210,9 +218,10 @@ Replace with values from your stereo calibration (`camera_matrix` from calib.yam
 | LIFT | `lift_height` | 0.20 m |
 | PLACE | `place_height` | 0.02 m |
 
-### Mock mode (no robot hardware needed)
+### Mock mode
 
-`LeRobotInterface` silently falls back to mock mode if `lerobot` is not installed or the serial port is unavailable. Use `--no-mock` to disable this and catch missing hardware early:
+`LeRobotInterface` silently falls back to mock mode if `lerobot` is not installed or the
+serial port is unavailable. Use `--no-mock` to disable this:
 
 ```
 WARNING  lerobot package not found — running in MOCK mode.
@@ -222,8 +231,8 @@ WARNING  lerobot package not found — running in MOCK mode.
 
 ## Calibration
 
-Eye-to-hand calibration maps the camera frame to the robot base frame (4×4 rigid transform).
-The calibration uses a **single ArUco marker** (DICT_4X4_50, ID 0, 40 mm) mounted on the end-effector.
+Eye-to-hand calibration maps the camera frame to the robot base frame.
+Uses a **single ArUco marker** (DICT_4X4_50, ID 0, 40 mm) mounted on the end-effector.
 
 See [calibration/README.md](calibration/README.md) for the full step-by-step workflow.
 
@@ -233,15 +242,15 @@ See [calibration/README.md](calibration/README.md) for the full step-by-step wor
 # 1. Generate the marker PDF
 python calibrate.py --generate-marker
 
-# 2. Run the interactive capture tool
+# 2. Run the interactive capture tool (follow 18 on-screen pose hints)
 python calibrate.py \
   --calib /path/to/calib.yaml \
   --camera-matrix K.npy \
   --dist-coeffs dist.npy \
   --port /dev/ttyACM0
 
-# 3. Follow the 18 on-screen pose hints, press SPACE to capture each
-# 4. Press ENTER when done — T_cam_robot.npy is saved automatically
+# 3. Press SPACE to capture each pose, ENTER when done
+# → calibration/camera_to_robot.npy saved automatically
 ```
 
 ---
@@ -250,26 +259,28 @@ python calibrate.py \
 
 ```
 vla_robot/
-├── main.py                              # CLI entry point; config factory; image loader
-├── calibrate.py                         # Interactive eye-to-hand calibration tool
+├── main.py                              Thin CLI: arg parsing, image loading, pipeline call
+├── calibrate.py                         Interactive eye-to-hand calibration tool
 ├── requirements.txt
 ├── calibration/
-│   ├── README.md                        # Full calibration workflow
-│   └── eye_to_hand_calibrator.py        # ArUco-based calibration library
+│   ├── README.md                        Full calibration workflow
+│   └── eye_to_hand_calibrator.py        ArUco-based calibration library
 └── vla_framework/
-    ├── config.py                        # All hardware config dataclasses
-    ├── pipeline.py                      # VLAPipeline orchestrator — wires all 4 stages
+    ├── config.py                        Hardware config dataclasses (VLAConfig, etc.)
+    ├── config_factory.py                build_config() — assembles VLAConfig from CLI args
+    ├── pipeline.py                      PlanStage, ProjectStage, BuildStage, ExecuteStage,
+    │                                    VLAPipeline orchestrator
     ├── planner/
-    │   └── gemini_planner.py            # Stage 1: Gemini VLM → semantic waypoints
+    │   └── gemini_planner.py            Stage 1: Gemini VLM → semantic waypoints
     ├── projection/
-    │   └── depth_projection.py          # Stage 2: pixel + depth → 3-D robot frame
+    │   └── depth_projection.py          Stage 2: pixel + depth → 3-D robot frame
     ├── path/
-    │   └── trajectory_builder.py        # Stage 3: offsets + cubic spline
+    │   └── trajectory_builder.py        Stage 3: offsets + cubic spline
     ├── camera/
-    │   └── stereo_processor.py          # Stereo-depth toolkit wrapper + live streamer
+    │   └── stereo_processor.py          Stereo-depth toolkit wrapper + live streamer
     └── control/
-        ├── pid_controller.py            # Stage 4: Cartesian PID controller
-        └── lerobot_interface.py         # Stage 4: SO-101 hardware bridge (+ mock mode)
+        ├── pid_controller.py            Stage 4: Cartesian PID controller
+        └── lerobot_interface.py         Stage 4: SO-101 hardware bridge (+ mock mode)
 ```
 
 ---
