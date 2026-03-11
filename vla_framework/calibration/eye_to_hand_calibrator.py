@@ -53,7 +53,7 @@ def _build_aruco_dict(dict_name: str = "DICT_4X4_50"):
 
 def _detect_aruco_marker(
     gray: np.ndarray,
-    aruco_dict,
+    detector,
     marker_id: int,
     marker_size: float,
     camera_matrix: np.ndarray,
@@ -66,7 +66,7 @@ def _detect_aruco_marker(
     Parameters
     ----------
     gray        : Grayscale image (H, W) uint8.
-    aruco_dict  : ArUco dictionary object.
+    detector    : cv2.aruco.ArucoDetector instance (pre-built, cached by caller).
     marker_id   : The specific marker ID to look for.
     marker_size : Physical side length of the marker [m].
     camera_matrix, dist_coeffs : Camera intrinsics / distortion.
@@ -80,7 +80,7 @@ def _detect_aruco_marker(
     """
     import cv2
 
-    all_corners, all_ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict)
+    all_corners, all_ids, _ = detector.detectMarkers(gray)
 
     if all_ids is None or len(all_ids) == 0:
         return None, None, None, None
@@ -88,10 +88,19 @@ def _detect_aruco_marker(
     # Find the requested marker ID
     for corners, mid in zip(all_corners, all_ids.flatten()):
         if mid == marker_id:
-            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                [corners], marker_size, camera_matrix, dist_coeffs
+            obj_pts = np.array([
+                [-marker_size/2,  marker_size/2, 0],
+                [ marker_size/2,  marker_size/2, 0],
+                [ marker_size/2, -marker_size/2, 0],
+                [-marker_size/2, -marker_size/2, 0],
+            ], dtype=np.float32)
+            img_pts = corners.reshape(4, 2)
+            success, rvec, tvec = cv2.solvePnP(
+                obj_pts, img_pts, camera_matrix, dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
             )
-            # rvecs/tvecs shape: (1, 1, 3) → squeeze to (3, 1)
+            rvecs = [rvec]
+            tvecs = [tvec]
             rvec = rvecs[0].reshape(3, 1).astype(np.float64)
             tvec = tvecs[0].reshape(3, 1).astype(np.float64)
             return corners, int(mid), rvec, tvec
@@ -124,12 +133,17 @@ class EyeToHandCalibrator:
         marker_size:  float = 0.04,
         dict_name:    str   = "DICT_4X4_50",
     ) -> None:
+        import cv2
+
         self._K         = camera_matrix.astype(np.float64)
         self._dist      = dist_coeffs.astype(np.float64)
         self._marker_id = marker_id
         self._marker_sz = marker_size
         self._dict      = _build_aruco_dict(dict_name)
         self._dict_name = dict_name
+        self._detector  = cv2.aruco.ArucoDetector(
+            self._dict, cv2.aruco.DetectorParameters()
+        )
 
         log.info(
             "ArUco marker  id=%d  size=%.3fm  dict=%s",
@@ -170,7 +184,7 @@ class EyeToHandCalibrator:
         overlay = bgr_frame.copy()
 
         corners, mid, rvec, tvec = _detect_aruco_marker(
-            gray, self._dict, self._marker_id, self._marker_sz,
+            gray, self._detector, self._marker_id, self._marker_sz,
             self._K, self._dist,
         )
 

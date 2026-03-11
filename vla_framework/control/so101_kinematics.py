@@ -21,7 +21,7 @@ Link lengths (from SO-101 URDF):
 from __future__ import annotations
 
 import math
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -30,10 +30,24 @@ import numpy as np
 # Robot factory
 # ---------------------------------------------------------------------------
 
-def create_real_robot(port: str, camera_index: int = 0, uid: str = "so101"):
+def create_real_robot(
+    port: str,
+    camera_index: Optional[int] = 0,
+    uid: str = "so101",
+    robot_id: str = "my_follower",
+):
     """
-    Construct a real SO-101 robot from a serial port and camera index.
+    Construct a real SO-101 robot from a serial port and optional camera index.
     Uses SO101FollowerConfig + make_robot_from_config from LeRobot.
+
+    Parameters
+    ----------
+    port         : Serial port, e.g. "/dev/ttyACM0".
+    camera_index : OpenCV camera index.  Pass None to skip camera init
+                   (e.g. when the caller manages its own cv2.VideoCapture).
+    uid          : Robot type key (only "so101" is supported).
+    robot_id     : LeRobot robot ID — must match the calibration JSON stem,
+                   e.g. "my_follower" → {calib_dir}/my_follower.json.
 
     Raises ImportError if the lerobot package is not installed.
     Raises ValueError for unknown uid values.
@@ -43,13 +57,12 @@ def create_real_robot(port: str, camera_index: int = 0, uid: str = "so101"):
 
     from lerobot.robots.so_follower.config_so_follower import SO101FollowerConfig   # type: ignore[import-not-found]
     from lerobot.robots.utils import make_robot_from_config                         # type: ignore[import-not-found]
-    from lerobot.cameras import ColorMode, Cv2Rotation                              # type: ignore[import-not-found]
-    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig      # type: ignore[import-not-found]
 
-    robot_config = SO101FollowerConfig(
-        port       = port,
-        use_degrees = True,
-        cameras    = {
+    cameras: dict = {}
+    if camera_index is not None:
+        from lerobot.cameras import ColorMode, Cv2Rotation                              # type: ignore[import-not-found]
+        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig      # type: ignore[import-not-found]
+        cameras = {
             "base_camera": OpenCVCameraConfig(
                 index_or_path = camera_index,
                 fps           = 30,
@@ -58,8 +71,13 @@ def create_real_robot(port: str, camera_index: int = 0, uid: str = "so101"):
                 color_mode    = ColorMode.RGB,
                 rotation      = Cv2Rotation.NO_ROTATION,
             )
-        },
-        id = "robot1",
+        }
+
+    robot_config = SO101FollowerConfig(
+        port        = port,
+        use_degrees = True,
+        cameras     = cameras,
+        id          = robot_id,
     )
     return make_robot_from_config(robot_config)
 

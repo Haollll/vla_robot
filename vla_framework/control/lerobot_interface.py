@@ -115,6 +115,122 @@ def encoder_to_gripper(raw: int, calib: Dict[str, Any]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Full forward kinematics — 4×4 homogeneous transform
+# ---------------------------------------------------------------------------
+
+def so101_fk_matrix(q_rad: np.ndarray) -> np.ndarray:
+    """
+    Full forward kinematics for the SO-101 arm.
+
+    Computes the end-effector pose (T_EE→base) as a 4×4 homogeneous
+    transform, consistent with SO101Kinematics.forward_kinematics().
+
+    Parameters
+    ----------
+    q_rad : array-like, shape (≥5,)
+        Joint angles in radians:
+          [0] shoulder_pan
+          [1] shoulder_lift
+          [2] elbow_flex
+          [3] wrist_flex
+          [4] wrist_roll
+          [5] gripper  (ignored — not a kinematic DOF)
+
+    Returns
+    -------
+    T : (4, 4) float64
+        Homogeneous transform of the EE in the robot base frame.
+
+    Notes
+    -----
+    Geometry constants (metres):
+      L1=0.1159  upper arm (shoulder_lift pivot → elbow pivot)
+      L2=0.1350  lower arm (elbow pivot → wrist pivot)
+      D_BASE=0.045  base origin → shoulder_lift pivot height
+      D_EE=0.050    wrist_roll pivot → EE tip
+
+    Joint-angle offsets (off1, off2) are taken from SO101Kinematics so that
+    the 3-D position produced here is identical to forward_kinematics().
+
+    Ry convention used throughout: Ry(a) maps X → (cos a, 0, −sin a),
+    so a rotation of −th rotates the X-axis up by th in the sagittal plane.
+    """
+    q = np.asarray(q_rad, dtype=np.float64).flatten()
+    pan, lift, elbow, wf, wr = (
+        float(q[0]), float(q[1]), float(q[2]), float(q[3]), float(q[4])
+    )
+
+    # Link geometry
+    L1     = 0.1159   # upper arm [m]
+    L2     = 0.1350   # lower arm [m]
+    D_BASE = 0.045    # shoulder height above base [m]
+    D_EE   = 0.050    # wrist-roll pivot to EE tip [m]
+
+    # Sagittal-plane offsets (matches SO101Kinematics exactly)
+    off1 = math.atan2(0.028,  0.11257)
+    off2 = math.atan2(0.0052, 0.1349) + off1
+
+    # Sagittal plane angles (radians)
+    th1 = (math.pi / 2 - lift)  - off1   # upper-arm angle from horizontal
+    th2 = (elbow + math.pi / 2) - off2   # lower-arm relative angle at elbow
+
+    # ---- elementary 4×4 transforms ----------------------------------------
+    def _rz(a: float) -> np.ndarray:
+        c, s = math.cos(a), math.sin(a)
+        return np.array(
+            [[c, -s, 0, 0], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+            dtype=np.float64,
+        )
+
+    def _ry(a: float) -> np.ndarray:
+        c, s = math.cos(a), math.sin(a)
+        return np.array(
+            [[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]],
+            dtype=np.float64,
+        )
+
+    def _rx(a: float) -> np.ndarray:
+        c, s = math.cos(a), math.sin(a)
+        return np.array(
+            [[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]],
+            dtype=np.float64,
+        )
+
+    def _tx(d: float) -> np.ndarray:
+        T = np.eye(4, dtype=np.float64)
+        T[0, 3] = d
+        return T
+
+    def _tz(d: float) -> np.ndarray:
+        T = np.eye(4, dtype=np.float64)
+        T[2, 3] = d
+        return T
+
+    # ---- kinematic chain --------------------------------------------------
+    # 1. shoulder_pan  — rotate base-Z by pan
+    # 2. translate up to shoulder height
+    # 3. shoulder_lift — rotate sagittal-Y by -th1  (Ry(-th1) tilts X upward)
+    # 4. translate L1  along upper arm
+    # 5. elbow_flex    — rotate sagittal-Y by (pi-th2)  (relative elbow bend)
+    # 6. translate L2  along lower arm
+    # 7. wrist_flex    — rotate Y by -wf  (same sign convention as shoulder_lift)
+    # 8. wrist_roll    — rotate X by wr
+    # 9. translate D_EE along wrist axis to EE tip
+    T: np.ndarray = (
+        _rz(pan)
+        @ _tz(D_BASE)
+        @ _ry(-th1)
+        @ _tx(L1)
+        @ _ry(math.pi - th2)
+        @ _tx(L2)
+        @ _ry(-wf)
+        @ _rx(wr)
+        @ _tx(D_EE)
+    )
+    return T
+
+
+# ---------------------------------------------------------------------------
 # State snapshot
 # ---------------------------------------------------------------------------
 
@@ -149,12 +265,12 @@ class LeRobotInterface:
 
     def __init__(
         self,
-        robot_type:   str           = "so101",
-        port:         str           = "/dev/ttyACM0",
-        camera_index: int           = 0,
+        robot_type:   str            = "so101",
+        port:         str            = "/dev/ttyACM0",
+        camera_index: Optional[int]  = 0,
         calib_path:   Optional[Path] = None,
-        robot_id:     str           = "my_follower",
-        strict:       bool          = False,
+        robot_id:     str            = "my_follower",
+        strict:       bool           = False,
     ) -> None:
         self._robot_type   = robot_type
         self._port         = port
@@ -174,7 +290,7 @@ class LeRobotInterface:
         self._calib    = load_calibration(_calib_path)
 
         log.info(
-            "LeRobotInterface created  type=%s  port=%s  cam=%d  strict=%s  calib=%s",
+            "LeRobotInterface created  type=%s  port=%s  cam=%s  strict=%s  calib=%s",
             robot_type, port, camera_index, strict,
             "loaded" if self._calib else "not found (using defaults)",
         )
@@ -185,10 +301,20 @@ class LeRobotInterface:
 
     def connect(self) -> None:
         try:
-            self._robot = create_real_robot(self._port, self._camera_index)
+            self._robot = create_real_robot(
+                self._port, self._camera_index, robot_id=self._robot_id
+            )
+            # calibrate=False avoids the interactive prompt; we apply the
+            # calibration file to the motor bus manually below.
             self._robot.connect(calibrate=False)
+            # If the robot loaded a calibration file but hasn't written it to
+            # the motor hardware yet (is_calibrated=False), push it now so
+            # _normalize() works without needing stdin input.
+            if self._robot.calibration and not self._robot.is_calibrated:
+                log.info("Applying stored calibration to motor bus (non-interactive).")
+                self._robot.bus.write_calibration(self._robot.calibration)
             self._connected = True
-            log.info("Connected to SO-101 on %s  cam=%d", self._port, self._camera_index)
+            log.info("Connected to SO-101 on %s  cam=%s", self._port, self._camera_index)
         except ImportError as exc:
             msg = f"lerobot package not found — install with: pip install lerobot  ({exc})"
             if self._strict:
@@ -222,7 +348,11 @@ class LeRobotInterface:
 
     def get_state(self) -> RobotState:
         if self._connected and self._robot is not None:
-            return self._read_hardware_state()
+            try:
+                return self._read_hardware_state()
+            except (ConnectionError, OSError, RuntimeError) as exc:
+                log.warning("Motor read failed (%s) — returning last known state.", exc)
+                return self._read_mock_state()
         return self._read_mock_state()
 
     def _read_hardware_state(self) -> RobotState:

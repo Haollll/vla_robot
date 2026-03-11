@@ -159,13 +159,20 @@ def run_calibration(args: argparse.Namespace) -> int:
              int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
 
     # ── Robot ────────────────────────────────────────────────────────────
-    robot = LeRobotInterface(port=args.port)
+    robot = LeRobotInterface(port=args.port, camera_index=None)
     robot.connect()
     if not robot.is_connected:
         log.warning(
             "Robot not connected — joint angles will be read from MOCK state.  "
             "For real calibration, ensure the arm is connected."
         )
+    else:
+        # Disable torque so the arm can be moved freely to each calibration pose.
+        try:
+            robot._robot.bus.disable_torque()
+            log.info("Motor torque disabled — arm can be moved freely.")
+        except Exception as exc:
+            log.warning("Could not disable torque: %s", exc)
 
     # ── Camera intrinsics ────────────────────────────────────────────────
     # Use the default D435 values; replace with your actual calibration if
@@ -287,7 +294,7 @@ def _preview_detection(
     gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     overlay = frame.copy()
     corners, mid, rvec, tvec = _detect_aruco_marker(
-        gray, cal._dict, cal._marker_id, cal._marker_sz, cal._K, cal._dist
+        gray, cal._detector, cal._marker_id, cal._marker_sz, cal._K, cal._dist
     )
 
     if corners is not None:
