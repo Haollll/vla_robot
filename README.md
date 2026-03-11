@@ -1,7 +1,7 @@
 # VLA Robot
 
 A hierarchical Vision-Language-Action (VLA) framework for robotic manipulation.
-It takes a natural-language command and an RGB-D camera frame, then plans, projects, builds, and executes a smooth Cartesian trajectory on a 6-DOF arm — all in four stages.
+Takes a natural-language command and an RGB-D camera frame, then plans, projects, builds, and executes a smooth Cartesian trajectory on a 6-DOF arm — all in four stages.
 
 ---
 
@@ -26,47 +26,50 @@ RGB + Depth + Command
  Stage 4 ─ EXECUTE     CartesianPIDController + LeRobotInterface
                         closed-loop servo, gripper stepped at transitions
 ```
+
 ---
+
 ## Data Flow
+
 ```mermaid
 flowchart TD
   subgraph DF["DATA FLOW"]
       direction TB
 
       A(["Raw Stereo Frame
-        1280×480 RGB"])
+        2560×720 side-by-side"])
       B[("Rolling Buffer
         deque · 15 frames")]
       C["Snapshot Coordinator
         freeze same index"]
-      
+
       D1(["rgb_snapshot"])
       D2(["depth_stack"])
 
       E1[["VLM Inference
-        Gemini Robotics"]]
+        Gemini"]]
       E2[["Stereo Processing
         Rectify→Disparity→Depth"]]
 
-      F1(["6x (u,v) waypoints"])
+      F1(["(u,v) waypoints"])
       F2(["Stable Depth Map
         spatial+temporal median"])
 
       G["Waypoint Lifting
         (u,v)+depth → (X,Y,Z)"]
 
-      H(["6x (X,Y,Z)
+      H(["(X,Y,Z)
         robot base frame"])
 
       I{"Valid?
         plausibility check"}
 
       J["Motion Planner
-        waypoints 1→5"]
-      K["Grasp Checkpoint
-        re-lift waypoint 6"]
+        trajectory build"]
+      K["Execute
+        PID servo + gripper"]
 
-      END(("✓ Grasp"))
+      END(("✓ Done"))
       RETRY(("↺ Retry"))
 
       A --> B --> C
@@ -85,7 +88,7 @@ flowchart TD
 ## Requirements
 
 - Python 3.10+
-- Intel RealSense D435 (or any RGB-D camera)
+- UVC stereo camera (side-by-side, 2560×720) with stereo calibration YAML
 - SO-101 6-DOF robot arm (via [LeRobot](https://github.com/huggingface/lerobot))
 - Google Gemini API key
 
@@ -97,22 +100,23 @@ flowchart TD
 git clone https://github.com/Haollll/vla_robot.git
 cd vla_robot
 ```
+
 ```bash
 conda create -n vla_robot python=3.10
 conda activate vla_robot
 pip install -r requirements.txt
-pip install google-genai
-```
-Install stereo-vision-toolkit:
-```bash
-pip install git@github.com:Kevinma0215/stereo-depth-toolkit.git
-# If toolkit upgrade: pip install --upgrade git@github.com:Kevinma0215/stereo-depth-toolkit.git
 ```
 
-For the latest LeRobot SO-100 support, install from source:
+`requirements.txt` installs everything including the stereo-depth toolkit and LeRobot from source:
 
-```bash
-pip install git+https://github.com/huggingface/lerobot.git
+```
+numpy>=1.26
+scipy>=1.13
+Pillow>=10.0
+opencv-contrib-python>=4.9
+google-genai>=1.0
+git+https://github.com/Kevinma0215/stereo-depth-toolkit.git
+git+https://github.com/huggingface/lerobot.git
 ```
 
 ---
@@ -128,7 +132,17 @@ python main.py \
   --dry-run
 ```
 
-### Full run with camera images
+### Full run with live stereo camera
+
+```bash
+python main.py \
+  --command "place the mug on the coaster" \
+  --api-key $GEMINI_KEY \
+  --calib  /path/to/calib.yaml \
+  --port   /dev/ttyACM0
+```
+
+### Full run with pre-captured images
 
 ```bash
 python main.py \
@@ -136,11 +150,22 @@ python main.py \
   --api-key $GEMINI_KEY \
   --rgb   /path/to/frame.png \
   --depth /path/to/depth.npy \
-  --port  /dev/ttyUSB0
+  --port  /dev/ttyACM0
 ```
 
 > `--depth` accepts `.npy` (float32, metres) or `.png` (uint16, millimetres).
 > Omit `--rgb` / `--depth` to use built-in synthetic demo data.
+
+### Production mode (fail loudly on missing hardware)
+
+```bash
+python main.py \
+  --command "pick up the red cube" \
+  --api-key $GEMINI_KEY \
+  --calib  /path/to/calib.yaml \
+  --port   /dev/ttyACM0 \
+  --no-mock
+```
 
 ### CLI flags
 
@@ -148,11 +173,16 @@ python main.py \
 |------|---------|-------------|
 | `--command` / `-c` | `"Pick up the red cube..."` | Natural language task |
 | `--api-key` / `-k` | *(required)* | Google Gemini API key |
-| `--model` | `gemini-2.0-flash` | Gemini model ID |
-| `--rgb` | None | Path to RGB image |
-| `--depth` | None | Path to depth map |
-| `--port` | `/dev/ttyUSB0` | Robot serial port |
-| `--dry-run` | False | Skip robot execution |
+| `--model` | `gemini-2.5-flash` | Gemini model ID |
+| `--rgb` | None | Path to RGB image (PNG/JPEG) |
+| `--depth` | None | Path to depth map (.npy metres or .png uint16 mm) |
+| `--port` | `/dev/ttyACM0` | Robot serial port |
+| `--calib` | *(path to calib.yaml)* | Stereo calibration YAML for live camera |
+| `--uvc-width` | `2560` | UVC camera capture width |
+| `--uvc-height` | `720` | UVC camera capture height |
+| `--uvc-fps` | `30` | UVC camera frame rate |
+| `--dry-run` | False | Skip robot execution (plan + project + build only) |
+| `--no-mock` | False | Fail loudly if robot or lerobot is unavailable |
 | `--log-level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 
 ---
@@ -162,11 +192,13 @@ python main.py \
 All hardware parameters are in [vla_framework/config.py](vla_framework/config.py) — camera intrinsics/extrinsics, PID gains, action offsets, and robot settings.
 No code changes are needed when switching hardware; edit the dataclasses or pass a custom `VLAConfig` to `VLAPipeline`.
 
-### Default camera (Intel RealSense D435 @ 640×480)
+### Camera intrinsics (Intel RealSense D435 defaults)
 
 ```python
-CameraIntrinsics(fx=615.3, fy=615.3, cx=320.0, cy=240.0)
+CameraIntrinsics(fx=615.3, fy=615.3, cx=320.0, cy=240.0, width=640, height=480)
 ```
+
+Replace with values from your stereo calibration (`camera_matrix` from calib.yaml).
 
 ### Action offsets (metres)
 
@@ -178,26 +210,66 @@ CameraIntrinsics(fx=615.3, fy=615.3, cx=320.0, cy=240.0)
 | LIFT | `lift_height` | 0.20 m |
 | PLACE | `place_height` | 0.02 m |
 
+### Mock mode (no robot hardware needed)
+
+`LeRobotInterface` silently falls back to mock mode if `lerobot` is not installed or the serial port is unavailable. Use `--no-mock` to disable this and catch missing hardware early:
+
+```
+WARNING  lerobot package not found — running in MOCK mode.
+```
+
+---
+
+## Calibration
+
+Eye-to-hand calibration maps the camera frame to the robot base frame (4×4 rigid transform).
+The calibration uses a **single ArUco marker** (DICT_4X4_50, ID 0, 40 mm) mounted on the end-effector.
+
+See [calibration/README.md](calibration/README.md) for the full step-by-step workflow.
+
+**Quick start:**
+
+```bash
+# 1. Generate the marker PDF
+python calibrate.py --generate-marker
+
+# 2. Run the interactive capture tool
+python calibrate.py \
+  --calib /path/to/calib.yaml \
+  --camera-matrix K.npy \
+  --dist-coeffs dist.npy \
+  --port /dev/ttyACM0
+
+# 3. Follow the 18 on-screen pose hints, press SPACE to capture each
+# 4. Press ENTER when done — T_cam_robot.npy is saved automatically
+```
+
 ---
 
 ## Project Structure
 
 ```
 vla_robot/
-├── main.py                          # CLI entry point
+├── main.py                              # CLI entry point; config factory; image loader
+├── calibrate.py                         # Interactive eye-to-hand calibration tool
 ├── requirements.txt
+├── calibration/
+│   ├── README.md                        # Full calibration workflow
+│   └── eye_to_hand_calibrator.py        # ArUco-based calibration library
 └── vla_framework/
-    ├── config.py                    # All hardware config dataclasses
-    ├── pipeline.py                  # Orchestrates the 4-stage pipeline
+    ├── config.py                        # All hardware config dataclasses
+    ├── pipeline.py                      # VLAPipeline orchestrator — wires all 4 stages
     ├── planner/
-    │   └── gemini_planner.py        # Stage 1: Gemini VLM → semantic waypoints
+    │   └── gemini_planner.py            # Stage 1: Gemini VLM → semantic waypoints
     ├── projection/
-    │   └── depth_projection.py      # Stage 2: pixel + depth → 3-D robot frame
+    │   └── depth_projection.py          # Stage 2: pixel + depth → 3-D robot frame
     ├── path/
-    │   └── trajectory_builder.py    # Stage 3: offsets + cubic spline
+    │   └── trajectory_builder.py        # Stage 3: offsets + cubic spline
+    ├── camera/
+    │   └── stereo_processor.py          # Stereo-depth toolkit wrapper + live streamer
     └── control/
-        ├── pid_controller.py        # Stage 4: Cartesian PID
-        └── lerobot_interface.py     # Stage 4: LeRobot hardware interface
+        ├── pid_controller.py            # Stage 4: Cartesian PID controller
+        └── lerobot_interface.py         # Stage 4: SO-101 hardware bridge (+ mock mode)
 ```
 
 ---
