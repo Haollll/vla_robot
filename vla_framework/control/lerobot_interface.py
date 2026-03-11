@@ -268,7 +268,8 @@ class LeRobotInterface:
     Hardware bridge for the SO-101 follower arm via LeRobot.
 
     Automatically falls back to a stateful mock if the ``lerobot`` package
-    is not installed or the port is unavailable.
+    is not installed or the port is unavailable — unless ``strict=True``,
+    in which case any connection failure raises ``RuntimeError`` immediately.
 
     Parameters
     ----------
@@ -277,6 +278,8 @@ class LeRobotInterface:
     calib_path     : Path to calibration JSON; uses the LeRobot default
                      location if not specified.
     robot_id       : Robot ID string used by LeRobot (matched to calib file).
+    strict         : If True, raise RuntimeError instead of falling back to
+                     mock mode when hardware or lerobot is unavailable.
     """
 
     def __init__(
@@ -285,10 +288,12 @@ class LeRobotInterface:
         port:       str  = "/dev/ttyACM0",
         calib_path: Optional[Path] = None,
         robot_id:   str  = "my_follower",
+        strict:     bool = False,
     ) -> None:
         self._robot_type = robot_type
         self._port       = port
         self._robot_id   = robot_id
+        self._strict     = strict
         self._robot: Optional[Any] = None
         self._connected  = False
 
@@ -301,8 +306,8 @@ class LeRobotInterface:
         self._calib = load_calibration(_calib_path)
 
         log.info(
-            "LeRobotInterface created  type=%s  port=%s  calib=%s",
-            robot_type, port,
+            "LeRobotInterface created  type=%s  port=%s  strict=%s  calib=%s",
+            robot_type, port, strict,
             "loaded" if self._calib else "not found (using defaults)",
         )
 
@@ -312,22 +317,32 @@ class LeRobotInterface:
 
     def connect(self) -> None:
         try:
-            from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig  # type: ignore[import-not-found]
+            # Try new lerobot API (So101RobotConfig) first, fall back to
+            # the older SO101FollowerConfig if it doesn't exist yet.
+            try:
+                from lerobot.robots.so101 import So101Robot, So101RobotConfig  # type: ignore[import-not-found]
+                cfg         = So101RobotConfig(port=self._port, id=self._robot_id)
+                self._robot = So101Robot(cfg)
+            except (ImportError, ModuleNotFoundError):
+                from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig  # type: ignore[import-not-found]
+                cfg         = SO101FollowerConfig(port=self._port, id=self._robot_id)
+                self._robot = SO101Follower(cfg)
 
-            cfg         = SO101FollowerConfig(port=self._port, id=self._robot_id)
-            self._robot = SO101Follower(cfg)
             # calibrate=False: we rely on the calibration file being already
             # written to the motors (via lerobot-calibrate).
             self._robot.connect(calibrate=False)
             self._connected = True
             log.info("Connected to SO-101 on %s (id=%s)", self._port, self._robot_id)
-        except ImportError:
-            log.warning(
-                "lerobot package not found — running in MOCK mode.  "
-                "Install with:  pip install lerobot"
-            )
+        except ImportError as exc:
+            msg = f"lerobot package not found — install with: pip install lerobot  ({exc})"
+            if self._strict:
+                raise RuntimeError(msg) from exc
+            log.warning("%s — running in MOCK mode.", msg)
         except Exception as exc:
-            log.warning("Robot connection failed (%s) — running in MOCK mode.", exc)
+            msg = f"Robot connection failed: {exc}"
+            if self._strict:
+                raise RuntimeError(msg) from exc
+            log.warning("%s — running in MOCK mode.", msg)
 
     def disconnect(self) -> None:
         if self._robot and self._connected:

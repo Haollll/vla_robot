@@ -95,6 +95,7 @@ class VLAPipeline:
         self.robot = LeRobotInterface(
             robot_type = config.robot_type,
             port       = config.robot_port,
+            strict     = config.robot_strict,
         )
 
     # ------------------------------------------------------------------

@@ -84,9 +84,10 @@ def make_demo_data(h: int = 480, w: int = 640) -> tuple[np.ndarray, np.ndarray]:
 # ---------------------------------------------------------------------------
 
 def build_config(
-    api_key: str,
-    model:   str,
-    port:    str,
+    api_key:   str,
+    model:     str,
+    port:      str,
+    no_mock:   bool = False,
 ) -> VLAConfig:
     """
     Assemble VLAConfig.  Edit defaults here to match your hardware.
@@ -137,8 +138,9 @@ def build_config(
         gemini_model       = model,
         interpolation_steps= 50,
         waypoint_tolerance = 0.005,
-        robot_type         = "so100",
+        robot_type         = "so101",
         robot_port         = port,
+        robot_strict       = no_mock,
         control_frequency  = 50.0,
         gripper_settle_s   = 0.40,
     )
@@ -242,6 +244,15 @@ def parse_args() -> argparse.Namespace:
         help    = "UVC stereo camera frame rate.",
     )
     p.add_argument(
+        "--no-mock",
+        action  = "store_true",
+        help    = (
+            "Fail loudly if the robot arm or lerobot package is unavailable, "
+            "instead of silently falling back to mock mode.  "
+            "Use this flag in production to catch missing hardware early."
+        ),
+    )
+    p.add_argument(
         "--log-level",
         default = "INFO",
         choices = ["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -276,13 +287,8 @@ def build_streamer(
     fps:          int = 30,
 ) -> "CameraStreamer":
     """Construct a fully wired CameraStreamer from a calibration file."""
-    from stereo_depth import CameraStreamer, RollingBuffer, StereoPipeline
-    from stereo_depth.adapters.camera.uvc_source import UvcSource
-
-    processor = StereoPipeline.from_yaml(calib_path)
-    source    = UvcSource(device_index=device_index, width=width, height=height, fps=fps)
-    buffer    = RollingBuffer(maxlen=15)
-    return CameraStreamer(source, buffer, processor)
+    from vla_framework.camera.stereo_processor import build_streamer as _build
+    return _build(calib_path, device_index=device_index, width=width, height=height, fps=fps)
 
 
 def capture_realsense(width: int, height: int, fps: int):
@@ -322,7 +328,7 @@ def main() -> int:
         rgb, depth = load_images(args.rgb, args.depth)
     log.info("Images loaded  rgb=%s  depth=%s", rgb.shape, depth.shape)
 
-    config = build_config(args.api_key, args.model, args.port)
+    config = build_config(args.api_key, args.model, args.port, no_mock=args.no_mock)
 
     if args.dry_run:
         pipeline = VLAPipeline(config)

@@ -4,14 +4,13 @@ scipy>=1.13
 
 # Vision
 Pillow>=10.0
-opencv-python>=4.9          # optional — for visualisation / camera capture
-pyrealsense2>=2.55          # optional — for RealSense live capture (--realsense flag)
+opencv-contrib-python>=4.9      # ArUco + calibration support
 
 # Gemini planner  (new unified SDK — replaces deprecated google-generativeai)
-google-genai>=1.0           # pip install google-genai
+google-genai>=1.0               # pip install google-genai
+
+# Stereo depth toolkit
+git+https://github.com/Kevinma0215/stereo-depth-toolkit.git
 
 # Robot hardware (Hugging Face LeRobot)
-# Install from source for latest SO-100 support:
-#   pip install git+https://github.com/huggingface/lerobot.git
-# Or from PyPI:
-lerobot>=0.1                # may be "huggingface-lerobot" depending on release
+git+https://github.com/huggingface/lerobot.git

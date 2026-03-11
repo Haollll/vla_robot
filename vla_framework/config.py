@@ -162,5 +162,6 @@ class VLAConfig:
     # Robot
     robot_type:         str   = "so101"          # LeRobot robot identifier
     robot_port:         str   = "/dev/ttyUSB0"
+    robot_strict:       bool  = False            # True → raise instead of mock on hw failure
     control_frequency:  float = 50.0             # Hz
     gripper_settle_s:   float = 0.40             # Wait after gripper command [s]
