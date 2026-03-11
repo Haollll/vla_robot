@@ -151,8 +151,8 @@ def run_calibration(args: argparse.Namespace) -> int:
     if not cap.isOpened():
         log.error("Cannot open camera %d", args.camera)
         return 1
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     log.info("Camera %d opened  %dx%d",
              args.camera,
              int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -162,17 +162,19 @@ def run_calibration(args: argparse.Namespace) -> int:
     robot = LeRobotInterface(port=args.port, camera_index=None)
     robot.connect()
     if not robot.is_connected:
-        log.warning(
-            "Robot not connected — joint angles will be read from MOCK state.  "
-            "For real calibration, ensure the arm is connected."
+        log.error(
+            "Robot not connected on %s — cannot calibrate without real joint angles.  "
+            "Check the USB cable, power, and port, then retry.", args.port
         )
-    else:
-        # Disable torque so the arm can be moved freely to each calibration pose.
-        try:
-            robot._robot.bus.disable_torque()
-            log.info("Motor torque disabled — arm can be moved freely.")
-        except Exception as exc:
-            log.warning("Could not disable torque: %s", exc)
+        cap.release()
+        return 1
+
+    # Disable torque so the arm can be moved freely to each calibration pose.
+    try:
+        robot._robot.bus.disable_torque()
+        log.info("Motor torque disabled — arm can be moved freely.")
+    except Exception as exc:
+        log.warning("Could not disable torque: %s", exc)
 
     # ── Camera intrinsics ────────────────────────────────────────────────
     # Use the default D435 values; replace with your actual calibration if

@@ -304,17 +304,24 @@ class LeRobotInterface:
             self._robot = create_real_robot(
                 self._port, self._camera_index, robot_id=self._robot_id
             )
-            # calibrate=False avoids the interactive prompt; we apply the
-            # calibration file to the motor bus manually below.
+            # calibrate=False avoids the interactive prompt.
             self._robot.connect(calibrate=False)
-            # If the robot loaded a calibration file but hasn't written it to
-            # the motor hardware yet (is_calibrated=False), push it now so
-            # _normalize() works without needing stdin input.
-            if self._robot.calibration and not self._robot.is_calibrated:
-                log.info("Applying stored calibration to motor bus (non-interactive).")
-                self._robot.bus.write_calibration(self._robot.calibration)
+            # Mark as connected immediately — the serial bus is up.
+            # Calibration push is best-effort; a read failure here must not
+            # roll back _connected.
             self._connected = True
             log.info("Connected to SO-101 on %s  cam=%s", self._port, self._camera_index)
+            # Push the stored calibration to the motor bus so _normalize()
+            # works without needing stdin input.
+            try:
+                if self._robot.calibration and not self._robot.is_calibrated:
+                    log.info("Applying stored calibration to motor bus (non-interactive).")
+                    self._robot.bus.write_calibration(self._robot.calibration)
+            except Exception as cal_exc:
+                log.warning(
+                    "Calibration push skipped (%s) — motor reads may fail until "
+                    "the bus stabilises.", cal_exc
+                )
         except ImportError as exc:
             msg = f"lerobot package not found — install with: pip install lerobot  ({exc})"
             if self._strict:
