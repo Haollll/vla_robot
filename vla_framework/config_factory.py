@@ -62,7 +62,7 @@ def build_config(
         pid_gains           = pid,
         action_offsets      = offsets,
         gemini_api_key      = api_key,
-        gemini_model        = model,
+        gemini_model = "gemini-robotics-er-1.5-preview",
         interpolation_steps = 50,
         waypoint_tolerance  = 0.005,
         robot_type          = "so101",
