@@ -2,20 +2,21 @@
 """
 VLA Robot — CLI entry point
 ============================
-Usage examples
---------------
-# Dry-run (plan + project + build, no robot):
+Dry run (plan + build, no robot):
   python main.py --command "pick up the red cube" --api-key $GEMINI_KEY --dry-run
 
-# Full run with live camera and robot:
+Live run with stereo camera + robot:
   python main.py --command "place the mug on the coaster" \
                  --api-key $GEMINI_KEY \
-                 --rgb   /path/to/frame.png \
-                 --depth /path/to/depth.npy \
-                 --port  /dev/ttyUSB0
+                 --calib   /path/to/calib.yaml \
+                 --port    /dev/ttyACM0
 
-# Specify a non-default Gemini model (e.g. gemini-robotics-er when available):
-  python main.py ... --model gemini-robotics-er
+Live run from pre-captured images:
+  python main.py --command "pick up the red cube" \
+                 --api-key $GEMINI_KEY \
+                 --rgb     /path/to/frame.png \
+                 --depth   /path/to/depth.npy \
+                 --port    /dev/ttyACM0
 """
 from __future__ import annotations
 
@@ -31,13 +32,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 
-from vla_framework.config import (
-    ActionOffsets,
-    CameraExtrinsics,
-    CameraIntrinsics,
-    PIDGains,
-    VLAConfig,
-)
+from vla_framework.config_factory import build_config
 from vla_framework.pipeline import VLAPipeline
 
 
@@ -55,104 +50,12 @@ def setup_logging(level: str = "INFO") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Synthetic demo data
-# ---------------------------------------------------------------------------
-
-def make_demo_data(h: int = 480, w: int = 640) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Generate a plausible RGB + depth pair for smoke-testing without a camera.
-    Depth: uniform 0.6 m background with a ~0.35 m "object" patch at centre.
-    """
-    rng = np.random.default_rng(42)
-
-    # RGB: random noise scene
-    rgb   = rng.integers(50, 200, size=(h, w, 3), dtype=np.uint8)
-    # Fake "red cube" blob near centre
-    rgb[200:260, 280:340, 0] = 200
-    rgb[200:260, 280:340, 1] = 50
-    rgb[200:260, 280:340, 2] = 50
-
-    # Depth (float32 metres)
-    depth = rng.uniform(0.55, 0.65, (h, w)).astype(np.float32)
-    depth[200:260, 280:340] = 0.35   # object is closer
-
-    return rgb, depth
-
-
-# ---------------------------------------------------------------------------
-# Config factory
-# ---------------------------------------------------------------------------
-
-def build_config(
-    api_key:   str,
-    model:     str,
-    port:      str,
-    no_mock:   bool = False,
-) -> VLAConfig:
-    """
-    Assemble VLAConfig.  Edit defaults here to match your hardware.
-
-    Camera: Intel RealSense D435 @ 640×480
-    Mount:  above the workspace, pointing ~30° downward
-    Robot:  SO-100 6-DOF arm via LeRobot
-    """
-    intrinsics = CameraIntrinsics(
-        fx=615.3, fy=615.3, cx=320.0, cy=240.0,
-        width=640, height=480,
-    )
-
-    # T_cam→robot: camera is above and behind the workspace, pointing toward robot
-    # Row order: [x_robot, y_robot, z_robot, translation]
-    T = np.array(
-        [
-            [ 0.0, -1.0,  0.0,  0.25],
-            [-1.0,  0.0,  0.0,  0.30],
-            [ 0.0,  0.0, -1.0,  0.55],
-            [ 0.0,  0.0,  0.0,  1.00],
-        ],
-        dtype=np.float64,
-    )
-    extrinsics = CameraExtrinsics(T=T)
-
-    pid = PIDGains(
-        kp=2.0, ki=0.05, kd=0.20,
-        max_integral=5.0,
-        output_min=-0.5, output_max=0.5,
-    )
-
-    offsets = ActionOffsets(
-        safety_height    = 0.15,
-        pre_grasp_height = 0.05,
-        grasp_descent    = 0.00,
-        lift_height      = 0.20,
-        place_height     = 0.02,
-        retreat_height   = 0.15,
-    )
-
-    return VLAConfig(
-        camera_intrinsics  = intrinsics,
-        camera_extrinsics  = extrinsics,
-        pid_gains          = pid,
-        action_offsets     = offsets,
-        gemini_api_key     = api_key,
-        gemini_model       = model,
-        interpolation_steps= 50,
-        waypoint_tolerance = 0.005,
-        robot_type         = "so101",
-        robot_port         = port,
-        robot_strict       = no_mock,
-        control_frequency  = 50.0,
-        gripper_settle_s   = 0.40,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Main
+# Argument parsing
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description = "Hierarchical VLA framework for robotic manipulation",
+        description     = "Hierarchical VLA framework for robotic manipulation",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
@@ -163,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--api-key", "-k",
         required = True,
-        help     = "Google Gemini API key (or set GEMINI_API_KEY env var).",
+        help     = "Google Gemini API key.",
     )
     p.add_argument(
         "--model",
@@ -173,14 +76,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--rgb",
         default = None,
-        help    = "Path to RGB image (PNG / JPEG).  Uses synthetic data if omitted.",
+        help    = "Path to RGB image (PNG/JPEG).  Uses synthetic data if omitted.",
     )
     p.add_argument(
         "--depth",
         default = None,
         help    = (
-            "Path to depth map.  Accepts .npy (float32, metres) or "
-            ".png (uint16, millimetres).  Uses synthetic data if omitted."
+            "Path to depth map (.npy float32 metres or .png uint16 mm).  "
+            "Uses synthetic data if omitted."
         ),
     )
     p.add_argument(
@@ -189,67 +92,24 @@ def parse_args() -> argparse.Namespace:
         help    = "Serial port for the robot arm.",
     )
     p.add_argument(
-        "--realsense",
-        action  = "store_true",
-        help    = (
-            "Capture a live RGB+depth frame from the RealSense camera "
-            "instead of reading from --rgb / --depth files.  "
-            "Requires pyrealsense2 (pip install pyrealsense2)."
-        ),
+        "--calib",
+        default = None,
+        help    = "Path to stereo calibration YAML.  Required for live camera mode.",
     )
-    p.add_argument(
-        "--rs-width",
-        type    = int,
-        default = 640,
-        help    = "RealSense capture width (used with --realsense).",
-    )
-    p.add_argument(
-        "--rs-height",
-        type    = int,
-        default = 480,
-        help    = "RealSense capture height (used with --realsense).",
-    )
-    p.add_argument(
-        "--rs-fps",
-        type    = int,
-        default = 30,
-        help    = "RealSense capture frame rate (used with --realsense).",
-    )
+    p.add_argument("--uvc-width",  type=int, default=2560, help="UVC capture width.")
+    p.add_argument("--uvc-height", type=int, default=720,  help="UVC capture height.")
+    p.add_argument("--uvc-fps",    type=int, default=30,   help="UVC frame rate.")
     p.add_argument(
         "--dry-run",
-        action  = "store_true",
-        help    = "Plan + project + build trajectory, but skip robot execution.",
-    )
-    p.add_argument(
-        "--calib",
-        default = "/home/kevin/projects/stereo-depth-toolkit/outputs/calib/calib.yaml",
-        help    = "Path to stereo calibration file (calib.yaml).",
-    )
-    p.add_argument(
-        "--uvc-width",
-        type    = int,
-        default = 2560,
-        help    = "UVC stereo camera capture width (side-by-side frame).",
-    )
-    p.add_argument(
-        "--uvc-height",
-        type    = int,
-        default = 720,
-        help    = "UVC stereo camera capture height.",
-    )
-    p.add_argument(
-        "--uvc-fps",
-        type    = int,
-        default = 30,
-        help    = "UVC stereo camera frame rate.",
+        action = "store_true",
+        help   = "Plan + project + build trajectory, but skip robot execution.",
     )
     p.add_argument(
         "--no-mock",
-        action  = "store_true",
-        help    = (
-            "Fail loudly if the robot arm or lerobot package is unavailable, "
-            "instead of silently falling back to mock mode.  "
-            "Use this flag in production to catch missing hardware early."
+        action = "store_true",
+        help   = (
+            "Fail loudly if the robot arm or lerobot is unavailable "
+            "instead of silently falling back to mock mode."
         ),
     )
     p.add_argument(
@@ -260,97 +120,91 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+# ---------------------------------------------------------------------------
+# Image loading helpers
+# ---------------------------------------------------------------------------
+
 def load_images(rgb_path: str | None, depth_path: str | None):
+    """Load RGB + depth from disk, or return synthetic demo data."""
+    log = logging.getLogger("main")
     if rgb_path is None or depth_path is None:
-        log = logging.getLogger("main")
         log.info("No image paths provided — using synthetic demo data")
-        return make_demo_data()
+        return _make_demo_data()
 
-    from PIL import Image as PILImage  # lazy import
-
-    rgb   = np.array(PILImage.open(rgb_path).convert("RGB"))
-    dp    = Path(depth_path)
+    from PIL import Image as PILImage
+    rgb = np.array(PILImage.open(rgb_path).convert("RGB"))
+    dp  = Path(depth_path)
     if dp.suffix == ".npy":
         depth = np.load(dp).astype(np.float32)
     else:
         depth = np.array(PILImage.open(dp)).astype(np.float32)
-        if depth.max() > 10.0:   # assume mm
-            depth /= 1000.0
+        if depth.max() > 10.0:
+            depth /= 1000.0   # mm → m
     return rgb, depth
 
 
-def build_streamer(
-    calib_path:   str,
-    device_index: int = 0,
-    width:        int = 2560,
-    height:       int = 720,
-    fps:          int = 30,
-) -> "CameraStreamer":
-    """Construct a fully wired CameraStreamer from a calibration file."""
+def _make_demo_data(h: int = 480, w: int = 640):
+    rng   = np.random.default_rng(42)
+    rgb   = rng.integers(50, 200, size=(h, w, 3), dtype=np.uint8)
+    rgb[200:260, 280:340, 0] = 200
+    rgb[200:260, 280:340, 1] = 50
+    rgb[200:260, 280:340, 2] = 50
+    depth = rng.uniform(0.55, 0.65, (h, w)).astype(np.float32)
+    depth[200:260, 280:340] = 0.35
+    return rgb, depth
+
+
+# ---------------------------------------------------------------------------
+# Streamer helper
+# ---------------------------------------------------------------------------
+
+def build_streamer(calib: str, width: int, height: int, fps: int) -> "CameraStreamer":
     from vla_framework.camera.stereo_processor import build_streamer as _build
-    return _build(calib_path, device_index=device_index, width=width, height=height, fps=fps)
+    return _build(calib, width=width, height=height, fps=fps)
 
 
-def capture_realsense(width: int, height: int, fps: int):
-    """
-    Capture one aligned RGB + depth frame from the RealSense camera.
-
-    RGB and depth are acquired in two background threads (see
-    RealSenseCamera internals) and joined before this function returns,
-    guaranteeing a matched frame pair.
-    """
-    from vla_framework.camera import RealSenseCamera
-
-    log = logging.getLogger("main")
-    log.info("Opening RealSense camera  %dx%d @ %d fps", width, height, fps)
-    with RealSenseCamera(width=width, height=height, fps=fps) as cam:
-        if cam.is_mock:
-            log.warning(
-                "RealSense running in MOCK mode "
-                "(no camera detected or pyrealsense2 not installed)"
-            )
-        rgb, depth = cam.capture()
-    log.info(
-        "RealSense capture done  rgb=%s  depth=%s  (mock=%s)",
-        rgb.shape, depth.shape, cam.is_mock,
-    )
-    return rgb, depth
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     args = parse_args()
     setup_logging(args.log_level)
-    log = logging.getLogger("main")
-
-    if args.realsense:
-        rgb, depth = capture_realsense(args.rs_width, args.rs_height, args.rs_fps)
-    else:
-        rgb, depth = load_images(args.rgb, args.depth)
-    log.info("Images loaded  rgb=%s  depth=%s", rgb.shape, depth.shape)
+    log  = logging.getLogger("main")
 
     config = build_config(args.api_key, args.model, args.port, no_mock=args.no_mock)
 
+    # ── Dry run: static images, no robot ────────────────────────────────────
     if args.dry_run:
+        rgb, depth = load_images(args.rgb, args.depth)
+        log.info("Images loaded  rgb=%s  depth=%s", rgb.shape, depth.shape)
         pipeline = VLAPipeline(config)
-        log.info("DRY RUN — planning only, robot will not move")
-        waypoints  = pipeline.plan(rgb, args.command)
-        positions  = pipeline.project_waypoints(waypoints, depth)
-        trajectory = pipeline.build_trajectory(waypoints, positions)
-        log.info("Trajectory has %d points", len(trajectory))
-        stride = max(1, len(trajectory) // 10)
-        for i, tp in enumerate(trajectory[::stride]):
-            log.info("  [%4d] %s  pos=%s  grip=%.1f",
-                     i * stride, tp.action_type.value,
-                     tp.position.round(4), tp.gripper)
-        return 0
+        success  = pipeline.run_from_images(rgb, depth, args.command, dry_run=True)
+        return 0 if success else 1
 
-    streamer = build_streamer(args.calib, width=args.uvc_width, height=args.uvc_height, fps=args.uvc_fps)
+    # ── Image-file run: static images, live robot ────────────────────────────
+    if args.rgb is not None or args.depth is not None:
+        rgb, depth = load_images(args.rgb, args.depth)
+        log.info("Images loaded  rgb=%s  depth=%s", rgb.shape, depth.shape)
+        pipeline = VLAPipeline(config)
+        with pipeline:
+            success = pipeline.run_from_images(rgb, depth, args.command)
+        return 0 if success else 1
+
+    # ── Live run: stereo camera + robot ─────────────────────────────────────
+    if args.calib is None:
+        log.error(
+            "--calib is required for live camera mode.  "
+            "Use --dry-run or --rgb/--depth for offline mode."
+        )
+        return 2
+
+    streamer = build_streamer(args.calib, args.uvc_width, args.uvc_height, args.uvc_fps)
     pipeline = VLAPipeline(config, streamer=streamer)
 
-    with pipeline.streamer:
-        # wait for buffer to fill (~0.5s at 30fps)
+    with streamer:
         log.info("Waiting for camera buffer to fill...")
-        while not pipeline.streamer.is_ready:
+        while not streamer.is_ready:
             time.sleep(0.05)
         log.info("Camera ready — starting pipeline")
 
