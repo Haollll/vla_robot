@@ -17,6 +17,7 @@ code changes needed.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
@@ -176,9 +177,15 @@ class GeminiPlanner:
         delay = self._retry_delay
         for attempt in range(self._max_retries + 1):
             try:
+                img_bytes_io = io.BytesIO()
+                pil_img.save(img_bytes_io, format="JPEG")
+                img_bytes = img_bytes_io.getvalue()
                 response = self._client.models.generate_content(
                     model=self._model_name,
-                    contents=[pil_img, prompt],
+                    contents=[
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                        prompt,
+                    ],
                     config=types.GenerateContentConfig(
                         temperature=0.2,
                         max_output_tokens=2048,
