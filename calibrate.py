@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -124,6 +125,48 @@ def _print_next_pose_hint(n_captured: int) -> None:
         print(f"\n  ▶  Bonus pose #{extra}: choose any new position / orientation")
 
 
+def _print_diagnostics(cal, T_cam2base: np.ndarray) -> None:
+    """Print per-sample and rotation-diversity diagnostics to help identify calibration error sources."""
+    import cv2
+
+    # ── Step 3: per-sample marker positions in robot base frame ──────────
+    print("\n── Step 3: Per-sample marker position in robot base frame ──")
+    positions = []
+    for i, (rv, tv) in enumerate(zip(cal._rvecs, cal._tvecs)):
+        R = cv2.Rodrigues(rv)[0]
+        T_m2c = np.eye(4)
+        T_m2c[:3, :3] = R
+        T_m2c[:3, 3]  = tv.flatten()
+        pos = (T_cam2base @ T_m2c)[:3, 3] * 100  # cm
+        positions.append(pos)
+        print(f"  [{i:02d}]  x={pos[0]:+6.1f}  y={pos[1]:+6.1f}  z={pos[2]:+6.1f}  cm")
+
+    pos_arr = np.array(positions)
+    spread  = pos_arr.max(axis=0) - pos_arr.min(axis=0)
+    print(f"\n  Spread (cm):  x={spread[0]:.1f}  y={spread[1]:.1f}  z={spread[2]:.1f}")
+    if spread.max() > 5.0:
+        print("  ⚠ Large spread — likely FK model wrong (bad D_BASE/D_EE or stale my_follower.json)")
+    else:
+        print("  ✓ Positions consistent — FK model looks reasonable")
+
+    # ── Step 4: FK vs physical sanity check ──────────────────────────────
+    print("\n── Step 4: EE positions predicted by FK across all samples ──")
+    for i, T_ee in enumerate(cal._T_ee2base):
+        p = T_ee[:3, 3] * 100
+        print(f"  [{i:02d}]  x={p[0]:+6.1f}  y={p[1]:+6.1f}  z={p[2]:+6.1f}  cm")
+    print("  Compare z values to your physical arm height — should not be negative or > 50 cm")
+
+    # ── Step 6: rotation diversity of captured poses ──────────────────────
+    print("\n── Step 6: Rotation diversity of marker poses ──")
+    angles = [float(np.linalg.norm(rv)) * 180.0 / np.pi for rv in cal._rvecs]
+    print(f"  Rotation angles (deg):  min={min(angles):.1f}  max={max(angles):.1f}  "
+          f"mean={np.mean(angles):.1f}  std={np.std(angles):.1f}")
+    if np.std(angles) < 10.0:
+        print("  ⚠ Low rotation diversity — redo capture and vary wrist_flex / wrist_roll each pose")
+    else:
+        print("  ✓ Sufficient rotation diversity")
+
+
 def _print_matrix(T: np.ndarray) -> None:
     print("\nT_camera→robot_base  (4×4):")
     print("┌" + "─" * 54 + "┐")
@@ -194,6 +237,11 @@ def run_calibration(args: argparse.Namespace) -> int:
 
     cv2.namedWindow("Calibration", cv2.WINDOW_NORMAL)
 
+    # Joint-change validation: reject samples where joints didn't move
+    # (indicates a stale/mock read due to motor communication failure).
+    _JOINT_CHANGE_THRESHOLD_RAD = math.radians(2.0)   # 2° minimum movement
+    _last_accepted_q: np.ndarray | None = None
+
     try:
         while True:
             ret, frame = cap.read()
@@ -205,8 +253,23 @@ def run_calibration(args: argparse.Namespace) -> int:
             state = robot.get_state()
             q_rad = state.joint_positions_rad
 
+            # Detect stale reads: joints match last accepted sample exactly
+            _joints_stale = (
+                _last_accepted_q is not None
+                and np.max(np.abs(q_rad[:5] - _last_accepted_q[:5])) < _JOINT_CHANGE_THRESHOLD_RAD
+            )
+
             # Live preview: detect board without storing the sample
             _, overlay = _preview_detection(frame, cal, q_rad)
+
+            # Joint-read health indicator
+            joint_deg = np.degrees(q_rad[:5])
+            joint_str = "  ".join(f"j{i+1}={v:+.0f}°" for i, v in enumerate(joint_deg))
+            stale_tag = "  [STALE READ]" if _joints_stale else ""
+            stale_color = (0, 0, 255) if _joints_stale else (200, 200, 200)
+            cv2.putText(overlay, joint_str + stale_tag,
+                        (10, overlay.shape[0] - 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, stale_color, 1)
 
             # Status bar
             cv2.putText(
@@ -224,12 +287,17 @@ def run_calibration(args: argparse.Namespace) -> int:
                 return 0
 
             elif key == ord(' '):
-                ok, _ = cal.add_sample(frame, q_rad)
-                if ok:
-                    print(f"  ✓ Sample {cal.n_samples} captured")
-                    _print_next_pose_hint(cal.n_samples)
+                if _joints_stale:
+                    print("  ✗ Joints unchanged from last sample — motor read may be stale.  "
+                          "Move the arm further before capturing.")
                 else:
-                    print("  ✗ Marker not detected — move arm or improve lighting")
+                    ok, _ = cal.add_sample(frame, q_rad)
+                    if ok:
+                        _last_accepted_q = q_rad.copy()
+                        print(f"  ✓ Sample {cal.n_samples} captured")
+                        _print_next_pose_hint(cal.n_samples)
+                    else:
+                        print("  ✗ Marker not detected — move arm or improve lighting")
 
             elif key == ord('d') or key == ord('D'):
                 if cal.n_samples > 0:
@@ -272,6 +340,8 @@ def run_calibration(args: argparse.Namespace) -> int:
         print("  ⚠ Acceptable, but consider recapturing with more varied poses")
     else:
         print("  ✗ High error — recapture with better board visibility and arm coverage")
+
+    _print_diagnostics(cal, T_cam2base)
 
     # ── Save ─────────────────────────────────────────────────────────────
     out_path = Path(args.output)
