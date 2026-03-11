@@ -164,7 +164,7 @@ class EyeToHandCalibrator:
         overlay : BGR frame annotated with detected marker / axes.
         """
         import cv2
-        from ..control.lerobot_interface import so101_fk_matrix
+        from ..control.so101_kinematics import so101_fk_matrix
 
         gray    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2GRAY)
         overlay = bgr_frame.copy()

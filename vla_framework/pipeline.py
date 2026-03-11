@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, List, Optional
 import numpy as np
 
 if TYPE_CHECKING:
-    from stereo_depth import CameraStreamer
+    from .interfaces import CameraStreamerInterface
 
 from .config import VLAConfig
 from .planner.gemini_planner      import GeminiPlanner, SemanticWaypoint
@@ -30,6 +30,11 @@ from .projection.depth_projection import DepthProjector, Point3D
 from .path.trajectory_builder     import TrajectoryBuilder, TrajectoryPoint
 from .control.pid_controller      import CartesianPIDController
 from .control.lerobot_interface   import LeRobotInterface
+from .interfaces import (
+    RobotInterface,
+    CameraStreamerInterface,
+    SimStepCallback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -130,16 +135,25 @@ class ExecuteStage:
     run() returns True on success, False if any servo step times out.
     """
 
-    def __init__(self, config: VLAConfig) -> None:
+    def __init__(
+        self,
+        config:      VLAConfig,
+        robot:       Optional[RobotInterface] = None,
+        sim_step_fn: Optional[SimStepCallback] = None,
+    ) -> None:
+        import time as _time
         dt = 1.0 / config.control_frequency
         self._pid    = CartesianPIDController(config.pid_gains, dt)
-        self._robot  = LeRobotInterface(
+        self._robot: RobotInterface = robot if robot is not None else LeRobotInterface(
             robot_type = config.robot_type,
             port       = config.robot_port,
             strict     = config.robot_strict,
         )
-        self._tol    = config.waypoint_tolerance
-        self._settle = config.gripper_settle_s
+        self._tol      = config.waypoint_tolerance
+        self._settle   = config.gripper_settle_s
+        self._sim_step: SimStepCallback = sim_step_fn if sim_step_fn is not None else (
+            lambda: _time.sleep(dt)
+        )
 
     def connect(self) -> None:
         self._robot.connect()
@@ -186,7 +200,7 @@ class ExecuteStage:
             if float(np.linalg.norm(error)) < self._tol:
                 return True
             self._robot.send_cartesian_velocity(self._pid.step(error))
-            time.sleep(dt)
+            self._sim_step()
         remaining = float(np.linalg.norm(target - self._robot.get_state().end_effector_pos))
         log.warning("Servo timeout  remaining_error=%.4f m", remaining)
         return False
@@ -212,14 +226,20 @@ class VLAPipeline:
     ...     success = pipeline.run_from_images(rgb, depth, command)
     """
 
-    def __init__(self, config: VLAConfig, streamer: "CameraStreamer | None" = None) -> None:
+    def __init__(
+        self,
+        config:      VLAConfig,
+        streamer:    "CameraStreamerInterface | None" = None,
+        robot:       Optional[RobotInterface] = None,
+        sim_step_fn: Optional[SimStepCallback] = None,
+    ) -> None:
         self.cfg      = config
         self.streamer = streamer
 
         self.plan_stage    = PlanStage(config)
         self.project_stage = ProjectStage(config)
         self.build_stage   = BuildStage(config)
-        self.execute_stage = ExecuteStage(config)
+        self.execute_stage = ExecuteStage(config, robot=robot, sim_step_fn=sim_step_fn)
 
     # ------------------------------------------------------------------
     # Lifecycle

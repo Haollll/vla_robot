@@ -11,8 +11,10 @@ extended to 3-D via shoulder_pan rotation.
 
   inverse_kinematics_3d(x, y, z) → (pan_deg, lift_deg, elbow_deg)
 
-Also provides create_real_robot() to construct a live SO-101 instance
-using the XLeRobot / LeRobot library pattern.
+Also provides:
+  so101_fk(q_rad)        → (3,)   EE position [m]  — full URDF FK (5 joints)
+  so101_fk_matrix(q_rad) → (4,4)  T_EE→base        — used by eye-to-hand calibrator
+  create_real_robot()    — XLeRobot / LeRobot robot factory
 
 Link lengths (from SO-101 URDF):
   l1 = 0.1159 m  (upper arm: shoulder_lift → elbow_flex)
@@ -24,6 +26,87 @@ import math
 from typing import List, Tuple, Union
 
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Full URDF-based FK — used by the eye-to-hand calibrator
+# ---------------------------------------------------------------------------
+# Joint origins extracted from so101_new_calib.urdf (TheRobotStudio/SO-ARM100).
+# Each entry is (xyz [m], rpy [rad]).  All joint axes are z.
+
+_SO101_JOINT_ORIGINS = [
+    # shoulder_pan  — base_link → shoulder_link
+    ([0.0388353,   0.0,        0.0624   ], [np.pi,      0.0,       -np.pi   ]),
+    # shoulder_lift — shoulder_link → upper_arm_link
+    ([-0.0303992, -0.0182778, -0.0542   ], [-np.pi/2,  -np.pi/2,   0.0      ]),
+    # elbow_flex    — upper_arm_link → lower_arm_link
+    ([-0.11257,   -0.028,      0.0      ], [0.0,        0.0,        np.pi/2  ]),
+    # wrist_flex    — lower_arm_link → wrist_link
+    ([-0.1349,     0.0052,     0.0      ], [0.0,        0.0,       -np.pi/2  ]),
+    # wrist_roll    — wrist_link → gripper_link
+    ([0.0,        -0.0611,     0.0181   ], [np.pi/2,    0.0486795,  np.pi    ]),
+]
+
+# Fixed transform: gripper_link → gripper_frame_link (EE, fixed joint)
+_SO101_EE_XYZ = [-0.0079, -0.000218121, -0.0981274]
+_SO101_EE_RPY = [0.0, np.pi, 0.0]
+
+
+def _rpy_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """URDF RPY → 3×3 rotation matrix: R = Rz(yaw) · Ry(pitch) · Rx(roll)."""
+    cr, sr = np.cos(roll),  np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw),   np.sin(yaw)
+    return np.array([
+        [cy*cp,  cy*sp*sr - sy*cr,  cy*sp*cr + sy*sr],
+        [sy*cp,  sy*sp*sr + cy*cr,  sy*sp*cr - cy*sr],
+        [-sp,    cp*sr,             cp*cr            ],
+    ], dtype=np.float64)
+
+
+def _fixed_tf(xyz: list, rpy: list) -> np.ndarray:
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = _rpy_matrix(*rpy)
+    T[:3, 3]  = xyz
+    return T
+
+
+def _rotz(theta: float) -> np.ndarray:
+    T = np.eye(4, dtype=np.float64)
+    c, s = np.cos(theta), np.sin(theta)
+    T[0, 0] = c;  T[0, 1] = -s
+    T[1, 0] = s;  T[1, 1] =  c
+    return T
+
+
+_TF_ORIGINS = [_fixed_tf(xyz, rpy) for xyz, rpy in _SO101_JOINT_ORIGINS]
+_TF_EE      = _fixed_tf(_SO101_EE_XYZ, _SO101_EE_RPY)
+
+
+def so101_fk_matrix(joint_angles_rad: np.ndarray) -> np.ndarray:
+    """
+    Full URDF forward kinematics for the SO-101 arm.
+
+    Parameters
+    ----------
+    joint_angles_rad : shape (≥5,) — [shoulder_pan, shoulder_lift,
+                       elbow_flex, wrist_flex, wrist_roll] in radians.
+
+    Returns
+    -------
+    T : (4, 4) homogeneous transform T_EE→base.
+    """
+    T = np.eye(4, dtype=np.float64)
+    for i, T_origin in enumerate(_TF_ORIGINS):
+        T = T @ T_origin @ _rotz(float(joint_angles_rad[i]))
+    return T @ _TF_EE
+
+
+def so101_fk(joint_angles_rad: np.ndarray) -> np.ndarray:
+    """
+    Full URDF FK — returns EE position (3,) in robot base frame [m].
+    """
+    return so101_fk_matrix(joint_angles_rad)[:3, 3]
 
 
 # ---------------------------------------------------------------------------
