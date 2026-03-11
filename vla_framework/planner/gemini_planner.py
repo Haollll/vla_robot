@@ -189,6 +189,7 @@ class GeminiPlanner:
                     config=types.GenerateContentConfig(
                         temperature=0.2,
                         max_output_tokens=2048,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
                 # Preferred path: official SDK convenience accessor
