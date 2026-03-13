@@ -168,8 +168,8 @@ class ExecuteStage:
         prev_grip = -1.0   # force gripper update on first point
 
         for idx, target in enumerate(trajectory):
-            # ── Gripper ──────────────────────────────────────────────────
-            if abs(target.gripper - prev_grip) > 0.05:
+            # ── Gripper — only at keyframe boundaries, not interpolated points ─
+            if target.is_keyframe and abs(target.gripper - prev_grip) > 0.05:
                 log.info(
                     "  [%4d] Gripper → %.0f  (%s)",
                     idx, target.gripper, target.description,

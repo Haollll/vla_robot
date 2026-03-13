@@ -55,7 +55,8 @@ class TrajectoryPoint:
     position:    np.ndarray   # [x, y, z] in robot base frame  [m]
     gripper:     float        # 0.0 = open, 1.0 = closed
     action_type: ActionType
-    description: str = ""
+    description: str  = ""
+    is_keyframe: bool = False  # True for original keyframes; False for interpolated points
 
     def __repr__(self) -> str:
         p = self.position
@@ -168,9 +169,12 @@ class TrajectoryBuilder:
                 pts = self._spline_segment(start_kf, end_kf)
 
             result.extend(pts)
-
-        # Append the final keyframe
-        result.append(keyframes[-1])
+            # Always include the endpoint keyframe so gripper-transition keyframes
+            # (e.g. GRASP-close at the same position as GRASP-descent) appear
+            # explicitly in the trajectory with is_keyframe=True.  Previously only
+            # keyframes[-1] was appended, causing intermediate keyframes to be
+            # swallowed as start_kf of the next segment without ever being executed.
+            result.append(end_kf)
 
         log.info(
             "Interpolated %d keyframes → %d trajectory points",
@@ -269,6 +273,7 @@ class TrajectoryBuilder:
                 gripper     = grip,
                 action_type = action_type,
                 description = f"{description} — {desc_suffix}" if desc_suffix else description,
+                is_keyframe = True,   # all _expand outputs are original keyframes
             )
 
         if action_type == ActionType.APPROACH:
