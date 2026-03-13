@@ -155,18 +155,13 @@ _SIM_SERVO_LOG_EVERY = 400   # log progress every N iterations (~2 s at 200 Hz)
 _SIM_CLOSE_ENOUGH    = 0.06  # m  (6 cm fallthrough — covers gripper-frame offset residuals)
 
 # Contact-based grasp approach constants.
-_GRASP_HOVER_Z        = 0.12   # m — absolute world Z to start descent from (well above cube top)
-_GRASP_CONTACT_VEL_Z  = -0.05  # m/s — slow descent velocity for contact detection
-_GRASP_CONTACT_MAX_STEPS = 600 # max control iterations for contact descent (3 s at 200 Hz)
-_GRASP_CONTACT_MIN_Z  = -0.01  # m — abort descent if EE goes below this (table floor guard)
-_GRASP_CONTACT_ARM_Z  = 0.045  # m — ignore contacts above this EE height (false-contact filter)
-_GRASP_EXTRA_STEPS_AFTER_CONTACT = 200  # extra descent steps after first contact (slides to cube center)
-# At 200 Hz and vel_z=-0.05 m/s: 1 step ≈ 0.25 mm descent.
-# 200 steps ≈ 50 mm budget — descent stalls against cube side so extra steps push through
-# wrist_roll angle that keeps the jaw axis horizontal (parallel to ground) when
-# the arm approaches from above.  0.0 rad = neutral / default; tune if jaw is
-# still mis-oriented after this fix.
-_GRASP_WRIST_ROLL_RAD = 0.0
+_GRASP_HOVER_Z               = 0.12   # m — hover height above table (high enough to avoid false contact)
+_GRASP_CONTACT_VEL_Z         = -0.05  # m/s — slow descent velocity
+_GRASP_CONTACT_MAX_STEPS     = 800    # max descent iterations before giving up
+_GRASP_CONTACT_MIN_Z         = -0.01  # m — floor guard
+_GRASP_CONTACT_ARM_Z         = 0.045  # m — ignore contacts above cube-top height (false-contact filter)
+_GRASP_EXTRA_STEPS_AFTER_CONTACT = 200  # extra steps at vel_z after first contact
+_GRASP_WRIST_ROLL_RAD        = 0.0    # rad — wrist neutral
 
 # Grasp timing constants (all in physics steps at the sim timestep).
 _GRASP_INIT_STEPS       = 50   # sim steps after initial gripper-open before any movement
@@ -306,13 +301,16 @@ class _SimExecuteStage(ExecuteStage):
         return {gid for gid in range(model.ngeom)
                 if int(model.geom_bodyid[gid]) == bid}
 
-    def _contact_descend(self, hover_xy: "np.ndarray", grip_aid: int = 5) -> bool:
+    def _contact_descend(
+        self,
+        hover_xy: "np.ndarray",
+        grip_aid: int = 5,
+        cube_bid: int = -1,
+    ) -> bool:
         """
-        Slowly descend from _GRASP_HOVER_Z toward the cube at vel_z=-0.05 m/s.
-        After each control step, scan data.contact[:ncon] for any contact that
-        involves one geom from the gripper family AND one from red_cube.
-        Stops and returns True on first contact; returns False if max steps
-        reached without contact or floor guard triggered.
+        Descend at vel_z=-0.05 m/s with no XY steering (hover_xy is static).
+        On first gripper↔cube contact below _GRASP_CONTACT_ARM_Z, continue
+        descending for _GRASP_EXTRA_STEPS_AFTER_CONTACT more steps then return.
         """
         import numpy as _np
         env   = self._robot._env
@@ -343,22 +341,21 @@ class _SimExecuteStage(ExecuteStage):
             ee_z = float(self._robot.get_state().end_effector_pos[2])
 
             if i % 20 == 0:
+                ee_pos = self._robot.get_state().end_effector_pos
                 log.info(
-                    "[ContactGrasp] iter=%d  ee_z=%.4f  ctrl[%d]=%.4f",
-                    i, ee_z, grip_aid, float(data.ctrl[grip_aid]),
+                    "[ContactGrasp] iter=%d  ee_z=%.4f  ee_xy=(%.4f,%.4f)  ctrl[%d]=%.4f",
+                    i, ee_z, ee_pos[0], ee_pos[1],
+                    grip_aid, float(data.ctrl[grip_aid]),
                 )
 
-            # Floor guard
             if ee_z < _GRASP_CONTACT_MIN_Z:
-                log.warning(
-                    "[ContactGrasp] floor guard triggered at iter=%d  ee_z=%.4f",
-                    i, ee_z,
-                )
+                log.warning("[ContactGrasp] floor guard at iter=%d  ee_z=%.4f", i, ee_z)
                 return False
 
-            # Contact scan — skip until EE has descended past the false-contact zone.
+            # Only scan for contact once below the false-contact threshold.
             if ee_z > _GRASP_CONTACT_ARM_Z:
                 continue
+
             for c in range(int(data.ncon)):
                 g1 = int(data.contact[c].geom1)
                 g2 = int(data.contact[c].geom2)
@@ -366,29 +363,22 @@ class _SimExecuteStage(ExecuteStage):
                    (g2 in grip_geoms and g1 in cube_geoms):
                     log.info(
                         "[ContactGrasp] contact detected  iter=%d  ee_z=%.4f  "
-                        "geoms=(%d,%d)  dist=%.5f — continuing %d more steps",
+                        "geoms=(%d,%d)  dist=%.5f — running %d extra steps",
                         i, ee_z, g1, g2, float(data.contact[c].dist),
                         _GRASP_EXTRA_STEPS_AFTER_CONTACT,
                     )
-                    # Continue descending to slide past the cube top to cube center.
-                    log.info(
-                        "[ContactGrasp] extra-descent start  ctrl[%d]=%.4f",
-                        grip_aid, float(data.ctrl[grip_aid]),
-                    )
-                    for extra in range(_GRASP_EXTRA_STEPS_AFTER_CONTACT):
+                    for _ in range(_GRASP_EXTRA_STEPS_AFTER_CONTACT):
                         self._robot.send_cartesian_velocity(v)
                         self._robot.set_wrist_roll(_GRASP_WRIST_ROLL_RAD)
                         self._sim_step()
                     log.info(
-                        "[ContactGrasp] extra steps done  final ee_z=%.4f  ctrl[%d]=%.4f",
+                        "[ContactGrasp] extra steps done  final ee_z=%.4f",
                         float(self._robot.get_state().end_effector_pos[2]),
-                        grip_aid, float(data.ctrl[grip_aid]),
                     )
                     return True
 
         log.warning(
-            "[ContactGrasp] max steps (%d) reached without contact  "
-            "final ee_z=%.4f",
+            "[ContactGrasp] max steps (%d) reached without contact  final ee_z=%.4f",
             _GRASP_CONTACT_MAX_STEPS,
             float(self._robot.get_state().end_effector_pos[2]),
         )
@@ -422,8 +412,9 @@ class _SimExecuteStage(ExecuteStage):
             log.warning("[GraspCheck] body 'red_cube' not found — feedback disabled")
 
         # Ground-truth cube XY for GRASP overrides.
-        # +0.017 m residual X correction: jaw contacts cube corner 17 mm off-centre.
-        _GRIPPERFRAME_X_OFFSET = 0.017   # m
+        # No X offset: arm naturally reaches cube_x; jaws (opening in X at 0.869 component)
+        # span ±26mm around cube's ±20mm faces when centred on cube.
+        _GRIPPERFRAME_X_OFFSET = 0.036  # m — X offset applied to cube GT XY for gripper targeting
         cube_gt_xy = env.data.xpos[cube_bid][:2].copy() if cube_bid >= 0 else None
         if cube_gt_xy is not None:
             cube_gt_xy[0] += _GRIPPERFRAME_X_OFFSET
@@ -518,20 +509,46 @@ class _SimExecuteStage(ExecuteStage):
                 )
                 self._servo_to(hover_pos, dt)
 
-                # 2. Align wrist_roll for horizontal jaw orientation.
+                # 2. Set wrist_roll to _GRASP_WRIST_ROLL_RAD (-π/2) so the jaw
+                #    opens horizontally (Z≈0) during top-down descent.
+                #    Predicted with FK scan: at -1.5708 rad the jaw-opening axis
+                #    has |Z|≈0.034, well below the 0.400 at wrist_roll=0.
+                import mujoco as _mj3
+                import numpy as _np2
+
+                _wr_jid   = _mj3.mj_name2id(env.model, _mj3.mjtObj.mjOBJ_JOINT, "wrist_roll")
+                _wr_qadr  = int(env.model.jnt_qposadr[_wr_jid])
+                _grip_bid = _mj3.mj_name2id(env.model, _mj3.mjtObj.mjOBJ_BODY, "gripper")
+                _wr_before = float(env.data.qpos[_wr_qadr])
+
                 self._robot.set_wrist_roll(_GRASP_WRIST_ROLL_RAD)
+
+                # Use FK to predict the jaw direction at the new wrist angle
+                # (no sim steps — physics runs during contact descent instead).
+                _saved_wr = float(env.data.qpos[_wr_qadr])
+                env.data.qpos[_wr_qadr] = _GRASP_WRIST_ROLL_RAD
+                _mj3.mj_fwdPosition(env.model, env.data)
+                _R_pred  = env.data.xmat[_grip_bid].reshape(3, 3)
+                _jaw_pred = _R_pred[:, 0].copy()
+                env.data.qpos[_wr_qadr] = _saved_wr           # restore actual qpos
+                _mj3.mj_fwdPosition(env.model, env.data)       # restore FK
+
                 log.info(
-                    "[GraspSeq] step 4b — wrist_roll aligned to %.4f rad",
-                    _GRASP_WRIST_ROLL_RAD,
+                    "[GraspSeq] step 4b — wrist_roll %.4f → %.4f rad  "
+                    "predicted jaw-opening axis: (%.3f, %.3f, %.3f)  |Z|=%.4f",
+                    _wr_before, _GRASP_WRIST_ROLL_RAD,
+                    _jaw_pred[0], _jaw_pred[1], _jaw_pred[2],
+                    abs(_jaw_pred[2]),
                 )
 
-                # 3. Descend until gripper contacts red_cube (contact-based).
+                # 3. Contact descent — slow Z descent until gripper↔cube contact.
+                #    Close immediately on first contact (GRASP_EXTRA_STEPS=0).
                 log.info(
                     "[GraspSeq] step 4c — contact descent  ctrl[%d]=%.4f  "
                     "(must be OPEN ≈ 0.0 before descending)",
                     _grip_aid, float(env.data.ctrl[_grip_aid]),
                 )
-                self._contact_descend(servo_pos[:2], _grip_aid)
+                self._contact_descend(servo_pos[:2], _grip_aid, cube_bid=cube_bid)
 
                 # 4. Close gripper immediately on contact; settle for forces.
                 log.info(
@@ -680,7 +697,7 @@ class _SimExecuteStage(ExecuteStage):
             # 6. Contact descent.
             log.info("[GraspCheck] retry %d — contact descent  ctrl[%d]=%.4f",
                      attempt, grip_aid, float(env.data.ctrl[grip_aid]))
-            self._contact_descend(grasp_xy, grip_aid)
+            self._contact_descend(grasp_xy, grip_aid, cube_bid=cube_bid)
 
             # 7. Close gripper and settle.
             log.info("[GraspCheck] retry %d — set_gripper(1.0)  ctrl[%d] before=%.4f",
