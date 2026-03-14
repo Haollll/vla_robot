@@ -6,28 +6,28 @@ from typing import Optional
 import numpy as np
 
 from ..control.lerobot_interface import RobotState
-from ..control.so101_kinematics  import SO101Kinematics
 from .mujoco_env import MuJoCoEnv
 
 log = logging.getLogger(__name__)
 
 JOINT_NAMES: list[str] = [
-    "shoulder_pan", "shoulder_lift", "elbow_flex",
-    "wrist_flex", "wrist_roll", "gripper",
+    "joint1", "joint2", "joint3", "joint4", "joint5", "joint6",
 ]
+
+# Gripper actuator names and per-actuator max closed position (rad)
+_GRIPPER_ACT_NAMES: list[str] = [
+    "actuator_rh_r1", "actuator_rh_r2", "actuator_rh_l1", "actuator_rh_l2",
+]
+_GRIPPER_ACT_MAX: list[float] = [1.1, 1.0, 1.1, 1.0]
+
 GRIPPER_OPEN_RAD:   float = 0.0
-# SO-101 gripper joint ctrlrange = [-0.17453, 1.74533].
-# 0.8 rad (≈46°) was not closing firmly enough to grip the cube.
-# 1.4 rad (≈80°, 80% of max) applies substantially more closing force.
-GRIPPER_CLOSED_RAD: float = 1.4
+GRIPPER_CLOSED_RAD: float = 1.0   # normalized 0–1
 
 # Velocity / stability limits
-_MAX_CART_VEL   = 0.80   # m/s — per-axis Cartesian velocity cap
-_MAX_JOINT_DELTA = 0.15  # rad — max joint change per control call
+_MAX_CART_VEL    = 0.80   # m/s — per-axis Cartesian velocity cap
+_MAX_JOINT_DELTA = 0.15   # rad — max joint change per control call
 
 # Home joint configuration: all joints zero.
-# Full FK at zeros → EE ≈ [0.391, 0.000, 0.227] m (arm pointing forward,
-# above the table — within 0.17 m of typical workspace waypoints).
 _HOME_Q = np.zeros(6, dtype=np.float64)
 
 
@@ -41,34 +41,28 @@ class MuJoCoSnapshot:
 class MuJoCoRobotInterface:
     def __init__(self, env: MuJoCoEnv,
                  joint_names: list[str] = JOINT_NAMES,
-                 ee_body_name: str = "end_effector",
+                 ee_body_name: str = "tcp_link",
                  control_hz: float = 50.0):
         self._env         = env
         self._joint_names = joint_names
         self._ee_body     = ee_body_name
-        self._kin         = SO101Kinematics()   # kept for _fk_ee fallback only
         self._connected   = False
-        self._q           = np.zeros(6, dtype=np.float64)
-        self._ctrl_dt     = 1.0 / control_hz   # PID control period [s]
-        self._vel_log_ctr = 0                   # throttle verbose velocity logs
+        self._q           = np.zeros(6, dtype=np.float64)   # 6 arm joints
+        self._gripper_state: float = 0.0                     # normalized 0–1
+        self._ctrl_dt     = 1.0 / control_hz
+        self._vel_log_ctr = 0
 
-        # Cache EE body id and arm DOF indices for Jacobian-based IK.
-        # Also look up the "gripperframe" site which is the actual fingertip
-        # contact point (~10 cm below moving_jaw body origin).  Using the site
-        # as the EE reference avoids the arm stalling because the moving_jaw
-        # body origin is several cm above the physical gripper contact surfaces.
+        # Cache EE body id, gripperframe site id, and arm DOF indices.
         try:
             import mujoco as _mj
             self._ee_bid = _mj.mj_name2id(
                 env.model, _mj.mjtObj.mjOBJ_BODY, ee_body_name)
-            # gripperframe site: actual fingertip position in world frame.
             self._ee_site_id: int = _mj.mj_name2id(
                 env.model, _mj.mjtObj.mjOBJ_SITE, "gripperframe")
-            # DOF (velocity) indices for the 5 arm joints (not gripper).
             self._arm_dof_ids: list[int] = [
                 int(env.model.jnt_dofadr[
                     _mj.mj_name2id(env.model, _mj.mjtObj.mjOBJ_JOINT, n)])
-                for n in joint_names[:5]
+                for n in joint_names
             ]
             log.info(
                 "[SIM] ee_body_id=%d  gripperframe_site_id=%d  arm_dof_ids=%s",
@@ -78,10 +72,9 @@ class MuJoCoRobotInterface:
             log.warning("[SIM] Jacobian setup failed: %s", e)
             self._ee_bid      = -1
             self._ee_site_id  = -1
-            self._arm_dof_ids = list(range(5))
+            self._arm_dof_ids = list(range(6))
 
-        # Cache actuator IDs: try "<joint_name>" first (so101_new_calib.xml
-        # names actuators identically to joints), fall back to "<joint_name>_act".
+        # Arm actuator IDs: try exact name → {name}_act → actuator_{name}
         try:
             import mujoco as _mj
             ids = []
@@ -89,21 +82,51 @@ class MuJoCoRobotInterface:
                 aid = _mj.mj_name2id(env.model, _mj.mjtObj.mjOBJ_ACTUATOR, n)
                 if aid < 0:
                     aid = _mj.mj_name2id(env.model, _mj.mjtObj.mjOBJ_ACTUATOR, f"{n}_act")
+                if aid < 0:
+                    aid = _mj.mj_name2id(env.model, _mj.mjtObj.mjOBJ_ACTUATOR, f"actuator_{n}")
                 ids.append(aid)
             self._act_ids: list[int] = ids
-            log.info(
-                "[SIM] actuator ids: %s",
-                {n: i for n, i in zip(joint_names, ids)},
-            )
+            log.info("[SIM] arm actuator ids: %s",
+                     {n: i for n, i in zip(joint_names, ids)})
         except Exception:
             self._act_ids = [-1] * len(joint_names)
+
+        # Gripper actuator IDs
+        try:
+            import mujoco as _mj
+            self._gripper_act_ids: list[int] = [
+                _mj.mj_name2id(env.model, _mj.mjtObj.mjOBJ_ACTUATOR, n)
+                for n in _GRIPPER_ACT_NAMES
+            ]
+            log.info("[SIM] gripper actuator ids: %s",
+                     {n: i for n, i in zip(_GRIPPER_ACT_NAMES, self._gripper_act_ids)})
+        except Exception:
+            self._gripper_act_ids = [-1] * len(_GRIPPER_ACT_NAMES)
 
     @property
     def is_connected(self): return self._connected
 
+    def _init_mocap(self):
+        """Find mocap body ID for EE control."""
+        try:
+            import mujoco as _mj
+            self._mocap_bid = _mj.mj_name2id(
+                self._env.model, _mj.mjtObj.mjOBJ_BODY, "mocap_ee")
+            if self._mocap_bid >= 0:
+                self._mocap_id = int(
+                    self._env.model.body_mocapid[self._mocap_bid])
+                log.info("[SIM] mocap_ee found: body_id=%d mocap_id=%d",
+                         self._mocap_bid, self._mocap_id)
+            else:
+                self._mocap_id = -1
+                log.warning("[SIM] mocap_ee not found — falling back to Jacobian IK")
+        except Exception as e:
+            self._mocap_id = -1
+            log.warning("[SIM] mocap init failed: %s", e)
+
     def connect(self):
         self._connected = True
-        # Ensure kinematic state (xpos, xmat, Jacobians) is up-to-date.
+        self._init_mocap()
         try:
             import mujoco as _mj
             _mj.mj_forward(self._env.model, self._env.data)
@@ -112,13 +135,14 @@ class MuJoCoRobotInterface:
         try:
             q = self._env.get_joint_positions(self._joint_names)
             self._q[:] = q
-            self._q[5] = float(np.clip(
-                (self._q[5] - GRIPPER_OPEN_RAD) /
-                max(1e-6, GRIPPER_CLOSED_RAD - GRIPPER_OPEN_RAD), 0.0, 1.0))
         except Exception as e:
             log.warning("Init joint read failed: %s", e)
         state = self.get_state()
         ee = state.end_effector_pos
+        if hasattr(self, '_mocap_id') and self._mocap_id >= 0:
+            self._env.data.mocap_pos[self._mocap_id] = ee.copy()
+            log.info("[SIM] mocap_ee initialized to EE pos: (%.4f, %.4f, %.4f)",
+                     ee[0], ee[1], ee[2])
         log.info(
             "[SIM] connected — EE home position: x=%.4f  y=%.4f  z=%.4f",
             ee[0], ee[1], ee[2],
@@ -137,126 +161,75 @@ class MuJoCoRobotInterface:
 
     def get_state(self) -> RobotState:
         try:
-            # Prefer the gripperframe site (actual fingertip contact point) so
-            # that servo targets match the physical geometry.  Fall back to the
-            # body origin if the site was not found in the model.
             if self._ee_site_id >= 0:
                 ee = self._env.data.site_xpos[self._ee_site_id].copy()
             else:
                 import mujoco
                 bid = mujoco.mj_name2id(self._env.model,
                                         mujoco.mjtObj.mjOBJ_BODY, self._ee_body)
-                ee = self._env.data.xpos[bid].copy() if bid >= 0 else self._fk_ee()
+                ee = self._env.data.xpos[bid].copy() if bid >= 0 else np.zeros(3)
         except Exception:
-            ee = self._fk_ee()
+            ee = np.zeros(3)
         return RobotState(
             joint_positions_rad = self._q.copy(),
             end_effector_pos    = ee,
-            gripper             = float(self._q[5]),
+            gripper             = self._gripper_state,
             timestamp           = time.monotonic(),
         )
 
-    def _fk_ee(self):
-        return np.array(self._kin.forward_kinematics(
-            math.degrees(self._q[0]),
-            math.degrees(self._q[1]),
-            math.degrees(self._q[2]),
-        ))
-
     def _sync_ctrl(self, indices=None):
-        """
-        Write self._q values into data.ctrl for the specified joint indices.
-        Keeping ctrl in sync with qpos prevents position actuators from
-        applying large corrective forces on the next mj_step (→ NaN in QACC).
-        """
+        """Write self._q arm joint values into data.ctrl."""
         if indices is None:
             indices = range(len(self._joint_names))
         for i in indices:
             aid = self._act_ids[i] if i < len(self._act_ids) else -1
             if aid < 0:
                 continue
-            if i < 5:
-                self._env.data.ctrl[aid] = float(self._q[i])
-            else:
-                # Gripper: convert normalized [0,1] → raw joint position
-                rad = GRIPPER_OPEN_RAD + self._q[5] * (GRIPPER_CLOSED_RAD - GRIPPER_OPEN_RAD)
-                self._env.data.ctrl[aid] = rad
+            self._env.data.ctrl[aid] = float(self._q[i])
 
     def send_cartesian_velocity(self, velocity_mps: np.ndarray):
         """
-        Convert a Cartesian velocity command (m/s, world frame) to joint
-        position increments via the MuJoCo translational Jacobian.
-
-        dq = J^T (J J^T + λI)^{-1}  v * dt   (damped least-squares)
-
-        This operates entirely in MuJoCo world frame, avoiding the coordinate-
-        frame mismatch of the analytical SO101Kinematics model.
+        Move EE by updating mocap body position (if available),
+        otherwise fall back to Jacobian IK.
         """
-        import mujoco
-
         v = np.clip(np.asarray(velocity_mps, dtype=float)[:3],
                     -_MAX_CART_VEL, _MAX_CART_VEL)
 
-        # Translational Jacobian (3, nv) in world frame.
-        # Use mj_jacSite at the gripperframe (fingertip) when available so the
-        # IK is consistent with the position reported by get_state().
-        jacp = np.zeros((3, self._env.model.nv))
-        if self._ee_site_id >= 0:
-            mujoco.mj_jacSite(self._env.model, self._env.data,
-                              jacp, None, self._ee_site_id)
+        if hasattr(self, '_mocap_id') and self._mocap_id >= 0:
+            self._env.data.mocap_pos[self._mocap_id] += v * self._ctrl_dt
         else:
-            mujoco.mj_jacBody(self._env.model, self._env.data,
-                              jacp, None, self._ee_bid)
+            import mujoco
+            jacp = np.zeros((3, self._env.model.nv))
+            if self._ee_site_id >= 0:
+                mujoco.mj_jacSite(self._env.model, self._env.data,
+                                  jacp, None, self._ee_site_id)
+            else:
+                mujoco.mj_jacBody(self._env.model, self._env.data,
+                                  jacp, None, self._ee_bid)
+            J = jacp[:, self._arm_dof_ids]
+            _DAMPING = 0.05
+            A  = J @ J.T + _DAMPING * np.eye(3)
+            dq = J.T @ np.linalg.solve(A, v * self._ctrl_dt)
+            dq = np.clip(dq, -_MAX_JOINT_DELTA, _MAX_JOINT_DELTA)
+            self._q[:6] += dq
+            self._sync_ctrl(range(6))
 
-        # Extract columns for the 5 arm DOFs only.
-        J = jacp[:, self._arm_dof_ids]   # (3, 5)
-
-        # Damped least-squares: dq = J^T (J J^T + λI)^{-1} v*dt
-        # λ=0.05 provides strong regularisation near singularities and
-        # joint limits, at the cost of some accuracy far from them.
-        _DAMPING = 0.05
-        A   = J @ J.T + _DAMPING * np.eye(3)
-        dq  = J.T @ np.linalg.solve(A, v * self._ctrl_dt)  # (5,)
-
-        # Clamp per-joint delta to prevent discontinuities.
-        dq = np.clip(dq, -_MAX_JOINT_DELTA, _MAX_JOINT_DELTA)
-        self._q[:5] += dq
-
-        # Diagnostic log (every 50 calls) — includes Jacobian condition number.
         self._vel_log_ctr += 1
         if self._vel_log_ctr % 50 == 1:
-            J_norm = float(np.linalg.norm(J))
-            cond   = float(np.linalg.cond(J))
-            log.debug(
-                "[vel] v=(%.3f,%.3f,%.3f)  |J|=%.4f  cond(J)=%.1f  dq=%s  q[:5]=%s",
-                v[0], v[1], v[2], J_norm, cond,
-                [f"{x:.4f}" for x in dq],
-                [f"{x:.4f}" for x in self._q[:5]],
-            )
-
-        # Drive actuators via ctrl — position servos apply smooth corrections.
-        self._sync_ctrl(range(5))
+            ee = self.get_state().end_effector_pos
+            log.debug("[vel] v=(%.3f,%.3f,%.3f)  ee=(%.3f,%.3f,%.3f)",
+                      v[0], v[1], v[2], ee[0], ee[1], ee[2])
 
     def set_gripper(self, state: float):
         state = float(np.clip(state, 0.0, 1.0))
-        self._q[5] = state
-        rad = GRIPPER_OPEN_RAD + state * (GRIPPER_CLOSED_RAD - GRIPPER_OPEN_RAD)
-        aid = self._act_ids[5] if len(self._act_ids) > 5 else -1
-        before = float(self._env.data.ctrl[aid]) if aid >= 0 else float("nan")
-        self._env.set_joint_positions([self._joint_names[5]], np.array([rad]))
-        self._sync_ctrl([5])
-        after = float(self._env.data.ctrl[aid]) if aid >= 0 else float("nan")
-        log.info(
-            "[Gripper] set_gripper(%.2f) → rad=%.4f rad  ctrl[%d]: %.4f → %.4f",
-            state, rad, aid, before, after,
-        )
+        self._gripper_state = state
+        for aid, max_val in zip(self._gripper_act_ids, _GRIPPER_ACT_MAX):
+            if aid >= 0:
+                self._env.data.ctrl[aid] = state * max_val
+        log.info("[Gripper] set_gripper(%.2f)", state)
 
     def set_wrist_roll(self, angle_rad: float):
-        """Set wrist_roll joint to a fixed angle and sync actuator ctrl.
-
-        Call this after positioning the arm (IK will have set wrist_roll
-        freely); this clamps it to the desired orientation for grasping.
-        """
+        """Set joint5 (Z-rotation / wrist roll) to a fixed angle."""
         self._q[4] = float(angle_rad)
         self._sync_ctrl([4])
 
@@ -265,8 +238,8 @@ class MuJoCoRobotInterface:
     def reset(self):
         self._env.reset()
         self._q[:] = _HOME_Q.copy()
-        # Initialise joints and actuator setpoints to home configuration.
-        self._env.set_joint_positions(self._joint_names[:5], self._q[:5])
+        self._gripper_state = 0.0
+        self._env.set_joint_positions(self._joint_names, self._q)
         self._sync_ctrl()
 
     def set_object_pose(self, name, position, quaternion=None):
@@ -333,14 +306,11 @@ class MuJoCoCameraStreamer:
             log.info("[debug] cam_xmat row1: [%.6f, %.6f, %.6f]", R_mj[1,0], R_mj[1,1], R_mj[1,2])
             log.info("[debug] cam_xmat row2: [%.6f, %.6f, %.6f]", R_mj[2,0], R_mj[2,1], R_mj[2,2])
 
-            # Build the same T_cam→world that camera_utils / DepthProjector use.
-            # R_c2w = R_mj.T @ diag([1, +1, -1])  (same as camera_utils._FLIP)
             _FLIP = np.diag([1.0, 1.0, -1.0])
             R_c2w = R_mj.T @ _FLIP
             T = np.eye(4, dtype=np.float64)
             T[:3, :3] = R_c2w
             T[:3,  3] = t_cam
-            # Invert: T_world→cam_cv  (exact inverse of DepthProjector's pipeline)
             T_inv = np.linalg.inv(T)
 
             img  = _Image.fromarray(rgb)
@@ -353,8 +323,8 @@ class MuJoCoCameraStreamer:
                     log.warning("[debug] body %r not found", body_name)
                     continue
 
-                p_world = self._env.data.xpos[bid].copy()     # (3,) world pos
-                p_cam_h = T_inv @ np.array([*p_world, 1.0])   # OpenCV cam frame
+                p_world = self._env.data.xpos[bid].copy()
+                p_cam_h = T_inv @ np.array([*p_world, 1.0])
                 X_cam, Y_cam, Z_cam = p_cam_h[0], p_cam_h[1], p_cam_h[2]
 
                 if Z_cam <= 0:

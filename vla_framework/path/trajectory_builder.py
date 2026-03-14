@@ -34,7 +34,7 @@ import numpy as np
 from ..config import ActionType, ActionOffsets
 from ..planner.gemini_planner import SemanticWaypoint
 from ..projection.depth_projection import Point3D
-from ..control.so101_kinematics import SO101Kinematics
+from ..control.omy_kinematics import OMyKinematics
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ class TrajectoryBuilder:
         self._off          = offsets
         self._steps        = max(2, interpolation_steps)
         self._control_freq = control_freq
-        self._kin          = SO101Kinematics()
+        self._kin = OMyKinematics()
 
     # ------------------------------------------------------------------
     # Public API

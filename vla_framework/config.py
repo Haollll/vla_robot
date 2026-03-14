@@ -133,7 +133,7 @@ class ActionOffsets:
     """All values are metres, positive z = up in robot base frame."""
     safety_height:    float = 0.15   # z-lift during APPROACH / MOVE / RETREAT
     pre_grasp_height: float = 0.05   # z above object for PRE_GRASP
-    grasp_descent:    float = 0.00   # extra z descent at GRASP (tune per gripper)
+    grasp_descent:    float = 0.02   # extra z descent at GRASP (tune per gripper)
     lift_height:      float = 0.20   # z above grasp point after LIFT
     place_height:     float = 0.02   # z above surface at PLACE
     retreat_height:   float = 0.15   # z during RETREAT

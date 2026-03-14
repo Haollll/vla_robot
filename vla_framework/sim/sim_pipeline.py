@@ -155,10 +155,10 @@ _SIM_SERVO_LOG_EVERY = 400   # log progress every N iterations (~2 s at 200 Hz)
 _SIM_CLOSE_ENOUGH    = 0.06  # m  (6 cm fallthrough — covers gripper-frame offset residuals)
 
 # Contact-based grasp approach constants.
-_GRASP_HOVER_Z               = 0.12   # m — hover height above table (high enough to avoid false contact)
+_GRASP_HOVER_Z               = 0.92   # m — hover height above table (high enough to avoid false contact)
 _GRASP_CONTACT_VEL_Z         = -0.05  # m/s — slow descent velocity
 _GRASP_CONTACT_MAX_STEPS     = 800    # max descent iterations before giving up
-_GRASP_CONTACT_MIN_Z         = -0.01  # m — floor guard
+_GRASP_CONTACT_MIN_Z         = 0.79  # m — floor guard
 _GRASP_CONTACT_ARM_Z         = 0.045  # m — ignore contacts above cube-top height (false-contact filter)
 _GRASP_EXTRA_STEPS_AFTER_CONTACT = 200  # extra steps at vel_z after first contact
 _GRASP_WRIST_ROLL_RAD        = 0.0    # rad — wrist neutral
@@ -166,12 +166,12 @@ _GRASP_WRIST_ROLL_RAD        = 0.0    # rad — wrist neutral
 # Grasp timing constants (all in physics steps at the sim timestep).
 _GRASP_INIT_STEPS       = 50   # sim steps after initial gripper-open before any movement
 _GRASP_POST_CLOSE_STEPS = 50   # sim steps after gripper close for contact forces to engage
-_LIFT_SUCCESS_Z     = 0.05   # m — cube must reach this height after LIFT to confirm success
+_LIFT_SUCCESS_Z     = 0.85   # m — cube must reach this height after LIFT to confirm success
 _MAX_GRASP_RETRIES  = 2      # maximum re-grasp attempts before proceeding anyway
 # Z heights for the full re-grasp sequence executed on retry (fresh cube GT XY used).
-_RETRY_APPROACH_Z   = 0.19   # m — safe approach height above table
-_RETRY_PRE_GRASP_Z  = 0.09   # m — pre-grasp hover (one spline segment above cube)
-_RETRY_LIFT_Z       = 0.24   # m — target lift height after re-close
+_RETRY_APPROACH_Z   = 0.99   # m — safe approach height above table
+_RETRY_PRE_GRASP_Z  = 0.89   # m — pre-grasp hover (one spline segment above cube)
+_RETRY_LIFT_Z       = 1.04   # m — target lift height after re-close
 
 
 class _SimExecuteStage(ExecuteStage):
@@ -282,7 +282,7 @@ class _SimExecuteStage(ExecuteStage):
         """Return geom IDs attached to the gripper body and moving_jaw child."""
         import mujoco as _mj
         ids: set = set()
-        for bname in ("gripper", "moving_jaw_so101_v1"):
+        for bname in ("gripper", "moving_jaw_so101_v1", "rh_p12_rn_r1", "rh_p12_rn_r2", "rh_p12_rn_l1", "rh_p12_rn_l2"):
             bid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, bname)
             if bid < 0:
                 continue
@@ -414,7 +414,7 @@ class _SimExecuteStage(ExecuteStage):
         # Ground-truth cube XY for GRASP overrides.
         # No X offset: arm naturally reaches cube_x; jaws (opening in X at 0.869 component)
         # span ±26mm around cube's ±20mm faces when centred on cube.
-        _GRIPPERFRAME_X_OFFSET = 0.036  # m — X offset applied to cube GT XY for gripper targeting
+        _GRIPPERFRAME_X_OFFSET = 0.0  # m — X offset applied to cube GT XY for gripper targeting
         cube_gt_xy = env.data.xpos[cube_bid][:2].copy() if cube_bid >= 0 else None
         if cube_gt_xy is not None:
             cube_gt_xy[0] += _GRIPPERFRAME_X_OFFSET

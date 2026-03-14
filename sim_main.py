@@ -37,9 +37,9 @@ def parse_args():
     p.add_argument("--command", "-c", default="Pick up the red cube")
     p.add_argument("--api-key", "-k", required=True)
     p.add_argument("--model",   default="gemini-2.5-flash")
-    p.add_argument("--scene",   default="models/so101/scene.xml")
+    p.add_argument("--scene",   default="models/robotis_omy/scene.xml")
     p.add_argument("--camera",  default="overhead_cam")
-    p.add_argument("--ee-body", default="moving_jaw_so101_v1")
+    p.add_argument("--ee-body", default="tcp_link")
     p.add_argument("--rgb",     default=None)
     p.add_argument("--depth",   default=None)
     p.add_argument("--viewer",  action="store_true")
@@ -123,7 +123,7 @@ def main():
     #     (50 points keeps execution fast; dense 200+ point trajectories
     #     cause unnecessary per-waypoint timeouts)
     config.control_frequency   = 200.0   # 200 Hz PID; phys_steps≈2 per cycle
-    config.waypoint_tolerance  = 0.03
+    config.waypoint_tolerance  = 0.05
     config.interpolation_steps = 10
     # The GT XY override uses the MuJoCo cube body centre directly (z=0.02 m),
     # so no additional z offset is needed.  grasp_descent left at default 0.0.
